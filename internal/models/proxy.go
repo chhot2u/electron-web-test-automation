@@ -50,7 +50,7 @@ const (
 func (p *Proxy) ToProxyConfig() ProxyConfig {
 	return ProxyConfig{
 		Server:   p.Server,
-		Protocol: string(p.Protocol),
+		Protocol: p.Protocol,
 		Username: p.Username,
 		Password: p.Password,
 		Geo:      p.Geo,

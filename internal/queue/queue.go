@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sync"
@@ -15,11 +16,13 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
+// EventCallback is invoked when a task's status changes.
 type EventCallback func(event models.TaskEvent)
 
 // ErrQueueFull is returned when the pending queue has reached its maximum size.
-var ErrQueueFull = fmt.Errorf("queue is full: too many pending tasks")
+var ErrQueueFull = errors.New("queue is full: too many pending tasks")
 
+// Queue manages task scheduling, concurrency limiting, and execution.
 type Queue struct {
 	db             *database.DB
 	runner         *browser.Runner
@@ -38,6 +41,7 @@ type Queue struct {
 	stopCh    chan struct{}
 }
 
+// New creates a Queue with the given concurrency limit and event callback.
 func New(db *database.DB, runner *browser.Runner, maxConcurrency int, onEvent EventCallback) *Queue {
 	return &Queue{
 		db:             db,
@@ -53,6 +57,7 @@ func New(db *database.DB, runner *browser.Runner, maxConcurrency int, onEvent Ev
 	}
 }
 
+// SetProxyManager attaches a proxy manager for automatic proxy selection.
 func (q *Queue) SetProxyManager(pm *proxy.Manager) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -65,6 +70,7 @@ func (q *Queue) getProxyManager() *proxy.Manager {
 	return q.proxyManager
 }
 
+// Submit enqueues a task for execution. Returns ErrQueueFull if at capacity.
 func (q *Queue) Submit(ctx context.Context, task models.Task) error {
 	q.mu.Lock()
 	if q.stopped {
@@ -101,6 +107,7 @@ func (q *Queue) Submit(ctx context.Context, task models.Task) error {
 	return nil
 }
 
+// SubmitBatch enqueues multiple tasks. Stops on first error.
 func (q *Queue) SubmitBatch(ctx context.Context, tasks []models.Task) error {
 	for _, task := range tasks {
 		if err := q.Submit(ctx, task); err != nil {
@@ -110,6 +117,7 @@ func (q *Queue) SubmitBatch(ctx context.Context, tasks []models.Task) error {
 	return nil
 }
 
+// Cancel stops a running or pending task and marks it as cancelled.
 func (q *Queue) Cancel(taskID string) error {
 	q.mu.Lock()
 
@@ -134,6 +142,7 @@ func (q *Queue) Cancel(taskID string) error {
 	return nil
 }
 
+// Stop cancels all running and pending tasks and prevents new submissions.
 func (q *Queue) Stop() {
 	q.stopOnce.Do(func() {
 		q.mu.Lock()
@@ -151,6 +160,7 @@ func (q *Queue) Stop() {
 	})
 }
 
+// RunningCount returns the number of currently executing tasks.
 func (q *Queue) RunningCount() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -164,6 +174,7 @@ func (q *Queue) executeTask(ctx context.Context, task models.Task) {
 		wasCancelled := q.cancelled[task.ID]
 		q.mu.Unlock()
 		if !wasCancelled {
+			_ = q.db.UpdateTaskStatus(task.ID, models.TaskStatusFailed, "failed to acquire queue slot")
 			q.emitEvent(task.ID, models.TaskStatusFailed, "failed to acquire queue slot")
 		}
 		return

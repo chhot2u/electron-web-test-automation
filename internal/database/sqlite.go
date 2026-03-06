@@ -3,8 +3,8 @@ package database
 import (
 	"database/sql"
 	"encoding/json"
-	"strings"
 	"fmt"
+	"strings"
 	"time"
 
 	"web-automation/internal/crypto"
@@ -444,7 +444,7 @@ func (db *DB) DeleteProxy(id string) error {
 // --- Scan helpers ---
 
 type scanner interface {
-	Scan(dest ...interface{}) error
+	Scan(dest ...any) error
 }
 
 func (db *DB) scanTask(row scanner) (*models.Task, error) {

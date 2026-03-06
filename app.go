@@ -93,8 +93,8 @@ func (a *App) startup(ctx context.Context) {
 	wailsRuntime.LogInfo(ctx, "Application started successfully")
 }
 
-// shutdown is called when the app is closing.
-func (a *App) shutdown(ctx context.Context) {
+// cleanup releases all application resources. Safe to call with nil fields.
+func (a *App) cleanup() {
 	if a.queue != nil {
 		a.queue.Stop()
 	}
@@ -106,17 +106,14 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 }
 
+// shutdown is called when the app is closing.
+func (a *App) shutdown(ctx context.Context) {
+	a.cleanup()
+}
+
 // shutdownFromSignal is called from OS signal handler (no Wails context available).
 func (a *App) shutdownFromSignal() {
-	if a.queue != nil {
-		a.queue.Stop()
-	}
-	if a.proxyManager != nil {
-		a.proxyManager.Stop()
-	}
-	if a.db != nil {
-		a.db.Close()
-	}
+	a.cleanup()
 }
 
 // --- Task API (bound to frontend) ---
@@ -225,7 +222,7 @@ func (a *App) CreateBatch(inputs []models.BatchTaskInput, autoStart bool) ([]mod
 		}
 	}
 
-	var created []models.Task
+	created := make([]models.Task, 0, len(inputs))
 	for _, input := range inputs {
 		task := models.Task{
 			ID:         uuid.New().String(),

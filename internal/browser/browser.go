@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -91,8 +92,8 @@ func (r *Runner) createAllocator(ctx context.Context, proxyConfig models.ProxyCo
 
 	if proxyConfig.Server != "" {
 		proxyAddr := proxyConfig.Server
-		if proxyConfig.Protocol != "" && proxyConfig.Protocol != "http" {
-			proxyAddr = proxyConfig.Protocol + "://" + proxyConfig.Server
+		if proxyConfig.Protocol != "" && proxyConfig.Protocol != models.ProxyHTTP {
+			proxyAddr = string(proxyConfig.Protocol) + "://" + proxyConfig.Server
 		}
 		opts = append(opts, chromedp.ProxyServer(proxyAddr))
 	}
@@ -126,7 +127,7 @@ func (r *Runner) runSteps(browserCtx context.Context, steps []models.TaskStep, r
 }
 
 func (r *Runner) setupProxyAuth(ctx context.Context, proxyConfig models.ProxyConfig) error {
-	chromedp.ListenTarget(ctx, func(ev interface{}) {
+	chromedp.ListenTarget(ctx, func(ev any) {
 		switch e := ev.(type) {
 		case *fetch.EventAuthRequired:
 			go func() {
@@ -290,13 +291,13 @@ func (r *Runner) execSelect(ctx context.Context, step models.TaskStep) error {
 	)
 }
 
-var ErrEvalNotAllowed = fmt.Errorf("eval action is not allowed: runner has allowEval=false")
+var ErrEvalNotAllowed = errors.New("eval action is not allowed: runner has allowEval=false")
 
 func (r *Runner) execEval(ctx context.Context, step models.TaskStep) error {
 	if !r.allowEval.Load() {
 		return ErrEvalNotAllowed
 	}
-	var res interface{}
+	var res any
 	return chromedp.Run(ctx,
 		chromedp.Evaluate(step.Value, &res),
 	)

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -95,6 +96,7 @@ func Decrypt(encoded string) (string, error) {
 
 	data, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
+		log.Printf("decrypt: base64 decode failed, treating as plaintext")
 		return encoded, nil
 	}
 
@@ -110,12 +112,14 @@ func Decrypt(encoded string) (string, error) {
 
 	nonceSize := gcm.NonceSize()
 	if len(data) < nonceSize {
+		log.Printf("decrypt: ciphertext too short, treating as plaintext")
 		return encoded, nil
 	}
 
 	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
+		log.Printf("decrypt: GCM open failed, treating as plaintext")
 		return encoded, nil
 	}
 

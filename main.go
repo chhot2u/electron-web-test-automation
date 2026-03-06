@@ -42,12 +42,12 @@ func main() {
 		BackgroundColour: &options.RGBA{R: 17, G: 24, B: 39, A: 1},
 		OnStartup:        app.startup,
 		OnShutdown:       app.shutdown,
-		Bind: []interface{}{
+		Bind: []any{
 			app,
 		},
 	})
 
 	if err != nil {
-		log.Println("Error:", err.Error())
+		log.Fatal("Error:", err.Error())
 	}
 }

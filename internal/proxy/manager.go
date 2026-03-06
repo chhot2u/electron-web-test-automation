@@ -153,6 +153,7 @@ func (m *Manager) selectLowestLatency(proxies []models.Proxy) models.Proxy {
 func (m *Manager) checkAll(ctx context.Context) {
 	proxies, err := m.db.ListProxies()
 	if err != nil {
+		log.Printf("health check: list proxies: %v", err)
 		return
 	}
 

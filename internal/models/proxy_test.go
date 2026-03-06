@@ -17,7 +17,7 @@ func TestProxyToProxyConfig(t *testing.T) {
 	if config.Server != p.Server {
 		t.Errorf("Server: got %q, want %q", config.Server, p.Server)
 	}
-	if config.Protocol != string(p.Protocol) {
+	if config.Protocol != p.Protocol {
 		t.Errorf("Protocol: got %q, want %q", config.Protocol, p.Protocol)
 	}
 	if config.Username != p.Username {

@@ -49,11 +49,11 @@ type TaskStep struct {
 
 // ProxyConfig holds proxy connection details for a task.
 type ProxyConfig struct {
-	Server   string `json:"server"`
-	Protocol string `json:"protocol,omitempty"` // http, https, socks5
-	Username string `json:"username,omitempty"`
-	Password string `json:"password,omitempty"`
-	Geo      string `json:"geo,omitempty"` // country code
+	Server   string        `json:"server"`
+	Protocol ProxyProtocol `json:"protocol,omitempty"`
+	Username string        `json:"username,omitempty"`
+	Password string        `json:"password,omitempty"`
+	Geo      string        `json:"geo,omitempty"`
 }
 
 // Task represents a single automated browser task.
