@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"encoding/csv"
-	"sync"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"web-automation/internal/batch"
@@ -553,7 +553,6 @@ func (a *App) ExportResultsCSV() (string, error) {
 	return exportPath, nil
 }
 
-
 // --- Recorder API ---
 
 // StartRecording opens a browser and starts capturing interactions.
@@ -581,7 +580,7 @@ func (a *App) StartRecording(url string) error {
 	})
 	a.recorderCancel = recCancel
 
-	if err := a.activeRecorder.Start(); err != nil {
+	if err := a.activeRecorder.Start(url); err != nil {
 		a.activeRecorder = nil
 		recCancel()
 		return fmt.Errorf("start recording: %w", err)
@@ -599,6 +598,8 @@ func (a *App) StopRecording() ([]models.RecordedStep, error) {
 	if a.activeRecorder == nil {
 		return nil, fmt.Errorf("no active recording session")
 	}
+
+	a.activeRecorder.Stop()
 
 	if a.recorderCancel != nil {
 		a.recorderCancel()

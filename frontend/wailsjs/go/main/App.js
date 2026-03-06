@@ -125,3 +125,15 @@ export function StartTask(arg1) {
 export function UpdateTask(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['main']['App']['UpdateTask'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
+
+export function IsRecording() {
+  return window['go']['main']['App']['IsRecording']();
+}
+
+export function StartRecording(arg1) {
+  return window['go']['main']['App']['StartRecording'](arg1);
+}
+
+export function StopRecording() {
+  return window['go']['main']['App']['StopRecording']();
+}

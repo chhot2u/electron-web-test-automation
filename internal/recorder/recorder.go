@@ -7,48 +7,138 @@ import (
 
 	"web-automation/internal/models"
 
-	"github.com/chromedp/cdproto/dom"
+	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
 
-// EventHandler receives recorded steps as they happen.
 type EventHandler func(step models.RecordedStep)
 
-// Recorder captures user interactions in a live browser session.
 type Recorder struct {
-	ctx       context.Context
-	handler   EventHandler
-	flowID    string
-	stepIndex int
+	parentCtx     context.Context
+	handler       EventHandler
+	flowID        string
+	stepIndex     int
+	allocCtx      context.Context
+	allocCancel   context.CancelFunc
+	browserCtx    context.Context
+	browserCancel context.CancelFunc
 }
 
-// New creates a recorder bound to a chromedp context.
-func New(ctx context.Context, flowID string, handler EventHandler) *Recorder {
-	return &Recorder{ctx: ctx, handler: handler, flowID: flowID, stepIndex: 0}
+func New(parentCtx context.Context, flowID string, handler EventHandler) *Recorder {
+	return &Recorder{parentCtx: parentCtx, handler: handler, flowID: flowID, stepIndex: 0}
 }
 
-// Start registers listeners and begins capturing interactions.
-func (r *Recorder) Start() error {
-	chromedp.ListenTarget(r.ctx, func(ev any) {
+func (r *Recorder) Start(url string) error {
+	opts := make([]chromedp.ExecAllocatorOption, len(chromedp.DefaultExecAllocatorOptions))
+	copy(opts, chromedp.DefaultExecAllocatorOptions[:])
+
+	opts = append(opts,
+		chromedp.Flag("headless", false),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+	)
+
+	r.allocCtx, r.allocCancel = chromedp.NewExecAllocator(r.parentCtx, opts...)
+	r.browserCtx, r.browserCancel = chromedp.NewContext(r.allocCtx)
+
+	r.registerListeners()
+
+	if err := r.enableDomains(); err != nil {
+		return err
+	}
+
+	if err := r.installCaptureScript(); err != nil {
+		return err
+	}
+
+	if err := chromedp.Run(r.browserCtx, chromedp.Navigate(url)); err != nil {
+		return fmt.Errorf("navigate to %s: %w", url, err)
+	}
+
+	if err := r.injectCaptureScript(); err != nil {
+		return fmt.Errorf("inject capture script: %w", err)
+	}
+
+	return nil
+}
+
+func (r *Recorder) registerListeners() {
+	chromedp.ListenTarget(r.browserCtx, func(ev any) {
 		switch e := ev.(type) {
-		case *dom.EventDocumentUpdated:
-			// no-op: reserved for future DOM change tracking
-		case *dom.EventAttributeModified:
-			// no-op
-		case *dom.EventCharacterDataModified:
-			// no-op
-		default:
-			_ = e
+		case *runtime.EventBindingCalled:
+			if e.Name != bindingName {
+				return
+			}
+			r.handleBindingCall(e.Payload)
+		case *page.EventFrameNavigated:
+			if e.Frame == nil || e.Frame.ParentID != "" {
+				return
+			}
+			r.RecordStep(models.ActionNavigate, "", e.Frame.URL)
 		}
 	})
+}
 
-	if err := chromedp.Run(r.ctx, dom.Enable()); err != nil {
-		return fmt.Errorf("enable dom domain: %w", err)
+func (r *Recorder) enableDomains() error {
+	if err := chromedp.Run(r.browserCtx, runtime.Enable()); err != nil {
+		return fmt.Errorf("enable runtime domain: %w", err)
+	}
+	if err := chromedp.Run(r.browserCtx, page.Enable()); err != nil {
+		return fmt.Errorf("enable page domain: %w", err)
+	}
+	if err := chromedp.Run(r.browserCtx, runtime.AddBinding(bindingName)); err != nil {
+		return fmt.Errorf("add binding %s: %w", bindingName, err)
 	}
 	return nil
 }
 
-// RecordStep emits a recorded step to the handler.
+func (r *Recorder) installCaptureScript() error {
+	err := chromedp.Run(r.browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		_, err := page.AddScriptToEvaluateOnNewDocument(captureScript).Do(ctx)
+		return err
+	}))
+	if err != nil {
+		return fmt.Errorf("install capture script: %w", err)
+	}
+	return nil
+}
+
+func (r *Recorder) injectCaptureScript() error {
+	return chromedp.Run(r.browserCtx, chromedp.Evaluate(captureScript, nil))
+}
+
+func (r *Recorder) handleBindingCall(payload string) {
+	action, selector, value, err := parseBindingPayload(payload)
+	if err != nil {
+		return
+	}
+	r.RecordStep(action, selector, value)
+}
+
+func (r *Recorder) Stop() error {
+	if r.browserCancel != nil {
+		r.browserCancel()
+		r.browserCancel = nil
+	}
+	if r.allocCancel != nil {
+		r.allocCancel()
+		r.allocCancel = nil
+	}
+	r.browserCtx = nil
+	r.allocCtx = nil
+	return nil
+}
+
+func (r *Recorder) BrowserCtx() context.Context {
+	return r.browserCtx
+}
+
+func (r *Recorder) FlowID() string {
+	return r.flowID
+}
+
 func (r *Recorder) RecordStep(action models.StepAction, selector, value string) {
 	if r.handler == nil {
 		return

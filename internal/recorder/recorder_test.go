@@ -1,6 +1,7 @@
 package recorder
 
 import (
+	"context"
 	"testing"
 
 	"web-automation/internal/models"
@@ -163,5 +164,79 @@ func TestSanitize(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("sanitize(%q): got %q, want %q", tc.input, got, tc.want)
 		}
+	}
+}
+
+func TestNewRecorder(t *testing.T) {
+	ctx := context.Background()
+	var called bool
+	handler := func(step models.RecordedStep) {
+		called = true
+	}
+
+	r := New(ctx, "flow-new", handler)
+	if r.flowID != "flow-new" {
+		t.Errorf("flowID: got %q, want %q", r.flowID, "flow-new")
+	}
+	if r.parentCtx != ctx {
+		t.Error("parentCtx not set correctly")
+	}
+	if r.BrowserCtx() != nil {
+		t.Error("BrowserCtx should be nil before Start")
+	}
+	if r.FlowID() != "flow-new" {
+		t.Errorf("FlowID(): got %q, want %q", r.FlowID(), "flow-new")
+	}
+
+	r.RecordStep(models.ActionClick, "#btn", "")
+	if !called {
+		t.Error("handler was not called")
+	}
+}
+
+func TestStopIdempotent(t *testing.T) {
+	r := &Recorder{flowID: "flow-stop"}
+
+	if err := r.Stop(); err != nil {
+		t.Fatalf("first Stop() returned error: %v", err)
+	}
+	if err := r.Stop(); err != nil {
+		t.Fatalf("second Stop() returned error: %v", err)
+	}
+}
+
+func TestStopCleansUpContexts(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	r := &Recorder{
+		flowID:        "flow-cleanup",
+		allocCtx:      ctx,
+		allocCancel:   cancel,
+		browserCtx:    ctx,
+		browserCancel: cancel,
+	}
+
+	if err := r.Stop(); err != nil {
+		t.Fatalf("Stop() returned error: %v", err)
+	}
+	if r.browserCtx != nil {
+		t.Error("browserCtx should be nil after Stop")
+	}
+	if r.allocCtx != nil {
+		t.Error("allocCtx should be nil after Stop")
+	}
+	if r.browserCancel != nil {
+		t.Error("browserCancel should be nil after Stop")
+	}
+	if r.allocCancel != nil {
+		t.Error("allocCancel should be nil after Stop")
+	}
+}
+
+func TestBrowserCtxNilBeforeStart(t *testing.T) {
+	r := New(context.Background(), "flow-ctx", nil)
+	if r.BrowserCtx() != nil {
+		t.Error("BrowserCtx() should return nil before Start")
 	}
 }

@@ -63,3 +63,9 @@ export function StartAllPending():Promise<void>;
 export function StartTask(arg1:string):Promise<void>;
 
 export function UpdateTask(arg1:string,arg2:string,arg3:string,arg4:Array<models.TaskStep>,arg5:models.ProxyConfig,arg6:number,arg7:Array<string>):Promise<void>;
+
+export function IsRecording():Promise<boolean>;
+
+export function StartRecording(arg1:string):Promise<void>;
+
+export function StopRecording():Promise<Array<models.RecordedStep>>;
