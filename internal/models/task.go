@@ -37,6 +37,7 @@ const (
 	ActionScroll     StepAction = "scroll"
 	ActionSelect     StepAction = "select"
 	ActionEval       StepAction = "eval"
+	ActionTabSwitch  StepAction = "tab_switch"
 )
 
 // TaskStep represents a single browser action within a task.
@@ -118,4 +119,13 @@ type BatchTaskInput struct {
 type BatchConfig struct {
 	Tasks       []Task `json:"tasks"`
 	Concurrency int    `json:"concurrency"` // max concurrent, default 100
+}
+
+// PaginatedTasks holds a page of tasks with metadata.
+type PaginatedTasks struct {
+	Tasks      []Task `json:"tasks"`
+	Total      int    `json:"total"`
+	Page       int    `json:"page"`
+	PageSize   int    `json:"pageSize"`
+	TotalPages int    `json:"totalPages"`
 }

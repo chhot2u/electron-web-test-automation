@@ -1,6 +1,7 @@
 package database
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -706,6 +707,119 @@ func TestDeleteProxyNotFound(t *testing.T) {
 	err := db.DeleteProxy("nonexistent-id")
 	if err == nil {
 		t.Fatal("expected error for nonexistent proxy ID")
+	}
+}
+
+func TestListTasksPaginated(t *testing.T) {
+	db := setupTestDB(t)
+
+	for i := 0; i < 15; i++ {
+		task := makeTask(
+			fmt.Sprintf("page-%d", i),
+			fmt.Sprintf("Task %d", i),
+		)
+		if err := db.CreateTask(task); err != nil {
+			t.Fatalf("CreateTask %d: %v", i, err)
+		}
+	}
+
+	result, err := db.ListTasksPaginated(1, 5, "", "")
+	if err != nil {
+		t.Fatalf("ListTasksPaginated: %v", err)
+	}
+	if result.Total != 15 {
+		t.Errorf("Total: got %d, want 15", result.Total)
+	}
+	if len(result.Tasks) != 5 {
+		t.Errorf("Tasks: got %d, want 5", len(result.Tasks))
+	}
+	if result.TotalPages != 3 {
+		t.Errorf("TotalPages: got %d, want 3", result.TotalPages)
+	}
+
+	result2, err := db.ListTasksPaginated(3, 5, "", "")
+	if err != nil {
+		t.Fatalf("ListTasksPaginated page 3: %v", err)
+	}
+	if len(result2.Tasks) != 5 {
+		t.Errorf("last page Tasks: got %d, want 5", len(result2.Tasks))
+	}
+}
+
+func TestListTasksPaginatedWithStatusFilter(t *testing.T) {
+	db := setupTestDB(t)
+
+	for i := 0; i < 5; i++ {
+		task := makeTask(fmt.Sprintf("filter-%d", i), fmt.Sprintf("Task %d", i))
+		if i%2 == 0 {
+			task.Status = models.TaskStatusCompleted
+		}
+		if err := db.CreateTask(task); err != nil {
+			t.Fatalf("CreateTask %d: %v", i, err)
+		}
+	}
+
+	result, err := db.ListTasksPaginated(1, 10, "completed", "")
+	if err != nil {
+		t.Fatalf("ListTasksPaginated: %v", err)
+	}
+	if result.Total != 3 {
+		t.Errorf("Total completed: got %d, want 3", result.Total)
+	}
+}
+
+func TestPurgeOldRecords(t *testing.T) {
+	db := setupTestDB(t)
+
+	task := makeTask("old-1", "Old Task")
+	task.Status = models.TaskStatusCompleted
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := db.UpdateTaskStatus("old-1", models.TaskStatusCompleted, ""); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+
+	n, err := db.PurgeOldRecords(90)
+	if err != nil {
+		t.Fatalf("PurgeOldRecords: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("purged: got %d, want 0 (task is new)", n)
+	}
+}
+
+func TestListAuditTrail(t *testing.T) {
+	db := setupTestDB(t)
+
+	event := models.TaskLifecycleEvent{
+		ID:        "evt-1",
+		TaskID:    "task-1",
+		FromState: models.TaskStatusPending,
+		ToState:   models.TaskStatusRunning,
+		Timestamp: time.Now(),
+	}
+	if err := db.InsertTaskEvent(event); err != nil {
+		t.Fatalf("InsertTaskEvent: %v", err)
+	}
+
+	events, err := db.ListAuditTrail("task-1", 10)
+	if err != nil {
+		t.Fatalf("ListAuditTrail: %v", err)
+	}
+	if len(events) != 1 {
+		t.Errorf("event count: got %d, want 1", len(events))
+	}
+	if events[0].ToState != models.TaskStatusRunning {
+		t.Errorf("ToState: got %q, want %q", events[0].ToState, models.TaskStatusRunning)
+	}
+
+	all, err := db.ListAuditTrail("", 0)
+	if err != nil {
+		t.Fatalf("ListAuditTrail all: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("all events: got %d, want 1", len(all))
 	}
 }
 

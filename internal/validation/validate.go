@@ -47,6 +47,7 @@ var validActions = map[models.StepAction]bool{
 	models.ActionScroll:     true,
 	models.ActionSelect:     true,
 	models.ActionEval:       true,
+	models.ActionTabSwitch:  true,
 }
 
 var selectorRequiredActions = map[models.StepAction]bool{

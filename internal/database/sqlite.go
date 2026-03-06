@@ -1019,3 +1019,142 @@ func (db *DB) ListNetworkLogs(taskID string) ([]models.NetworkLog, error) {
 	}
 	return logs, nil
 }
+
+// --- Paginated Queries ---
+
+// ListTasksPaginated returns a page of tasks.
+func (db *DB) ListTasksPaginated(page, pageSize int, status string, tag string) (models.PaginatedTasks, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 200 {
+		pageSize = 50
+	}
+
+	where := "WHERE 1=1"
+	args := []any{}
+	if status != "" && status != "all" {
+		where += " AND status = ?"
+		args = append(args, status)
+	}
+	if tag != "" {
+		where += " AND tags LIKE ?"
+		args = append(args, "%\""+tag+"\"%")
+	}
+
+	var total int
+	countQuery := "SELECT COUNT(*) FROM tasks " + where
+	if err := db.conn.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		return models.PaginatedTasks{}, fmt.Errorf("count tasks: %w", err)
+	}
+
+	totalPages := (total + pageSize - 1) / pageSize
+	offset := (page - 1) * pageSize
+
+	query := `SELECT id, name, url, steps, batch_id, flow_id, headless, proxy_server, proxy_username, proxy_password, proxy_geo, proxy_protocol,
+		priority, status, retry_count, max_retries, error, result, tags, created_at, started_at, completed_at
+		FROM tasks ` + where + ` ORDER BY priority DESC, created_at DESC LIMIT ? OFFSET ?`
+	queryArgs := append(args, pageSize, offset)
+
+	rows, err := db.conn.Query(query, queryArgs...)
+	if err != nil {
+		return models.PaginatedTasks{}, fmt.Errorf("query paginated tasks: %w", err)
+	}
+	defer rows.Close()
+
+	tasks := []models.Task{}
+	for rows.Next() {
+		task, err := db.scanTaskRow(rows)
+		if err != nil {
+			return models.PaginatedTasks{}, fmt.Errorf("scan task row: %w", err)
+		}
+		tasks = append(tasks, *task)
+	}
+	if err := rows.Err(); err != nil {
+		return models.PaginatedTasks{}, fmt.Errorf("iterate paginated tasks: %w", err)
+	}
+
+	return models.PaginatedTasks{
+		Tasks:      tasks,
+		Total:      total,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: totalPages,
+	}, nil
+}
+
+// --- Data Retention ---
+
+// PurgeOldRecords deletes completed/failed tasks and associated logs older than the given duration.
+func (db *DB) PurgeOldRecords(retentionDays int) (int64, error) {
+	cutoff := time.Now().AddDate(0, 0, -retentionDays).Format("2006-01-02 15:04:05")
+
+	var total int64
+
+	res, err := db.conn.Exec(`DELETE FROM step_logs WHERE task_id IN (SELECT id FROM tasks WHERE completed_at < ? AND status IN ('completed', 'failed', 'cancelled'))`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("purge step logs: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		total += n
+	}
+
+	res, err = db.conn.Exec(`DELETE FROM network_logs WHERE task_id IN (SELECT id FROM tasks WHERE completed_at < ? AND status IN ('completed', 'failed', 'cancelled'))`, cutoff)
+	if err != nil {
+		return total, fmt.Errorf("purge network logs: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		total += n
+	}
+
+	res, err = db.conn.Exec(`DELETE FROM task_events WHERE task_id IN (SELECT id FROM tasks WHERE completed_at < ? AND status IN ('completed', 'failed', 'cancelled'))`, cutoff)
+	if err != nil {
+		return total, fmt.Errorf("purge task events: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		total += n
+	}
+
+	res, err = db.conn.Exec(`DELETE FROM tasks WHERE completed_at < ? AND status IN ('completed', 'failed', 'cancelled')`, cutoff)
+	if err != nil {
+		return total, fmt.Errorf("purge old tasks: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		total += n
+	}
+
+	return total, nil
+}
+
+// ListAuditTrail returns task lifecycle events, optionally filtered by task ID.
+func (db *DB) ListAuditTrail(taskID string, limit int) ([]models.TaskLifecycleEvent, error) {
+	query := `SELECT id, task_id, batch_id, from_state, to_state, error, timestamp FROM task_events`
+	args := []any{}
+	if taskID != "" {
+		query += ` WHERE task_id = ?`
+		args = append(args, taskID)
+	}
+	query += ` ORDER BY timestamp DESC`
+	if limit > 0 {
+		query += fmt.Sprintf(` LIMIT %d`, limit)
+	}
+
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list audit trail: %w", err)
+	}
+	defer rows.Close()
+
+	events := []models.TaskLifecycleEvent{}
+	for rows.Next() {
+		var ev models.TaskLifecycleEvent
+		if err := rows.Scan(&ev.ID, &ev.TaskID, &ev.BatchID, &ev.FromState, &ev.ToState, &ev.Error, &ev.Timestamp); err != nil {
+			return nil, fmt.Errorf("scan audit event: %w", err)
+		}
+		events = append(events, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audit trail: %w", err)
+	}
+	return events, nil
+}

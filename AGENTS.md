@@ -109,19 +109,19 @@ Formatting:
 - Eval scripts are blocked by default (`allowEval=false`); see `browser.go`.
 
 ## Agent TODOs (Update as work progresses)
-1. Wire recorder browser launch (embedded browser opens on record).
-2. Capture click/type/navigation events and stream steps to UI.
-3. Add multi-tab recording with explicit tab-switch steps.
-4. Enable network request logging during recording.
-5. Wire DOM snapshots + selector generation.
-6. Implement playback engine for recorded flows.
-7. Add compliance redaction + audit trail and 90-day retention policy.
-8. Mask proxy credentials in all frontend responses.
-9. Add background agent/service for closed-app runs.
-10. Add CI pipeline, pagination, UX polish, and E2E tests.
+1. ~~Wire recorder browser launch (embedded browser opens on record).~~ **DONE**
+2. ~~Capture click/type/navigation events and stream steps to UI.~~ **DONE**
+3. ~~Add multi-tab recording with explicit tab-switch steps.~~ **DONE** — `ActionTabSwitch` added; recorder listens for `target.EventTargetInfoChanged`.
+4. ~~Enable network request logging during recording.~~ **DONE** — `NetworkLogger` wired into recorder; logs persisted on stop.
+5. ~~Wire DOM snapshots + selector generation.~~ **DONE** — `Snapshotter` wired into recorder; snapshots captured per step.
+6. ~~Implement playback engine for recorded flows.~~ **DONE** — `PlayRecordedFlow` API on `App`.
+7. ~~Add compliance redaction + audit trail and 90-day retention policy.~~ **DONE** — `PurgeOldRecords` (90-day), `ListAuditTrail` API, auto-cleanup goroutine.
+8. ~~Mask proxy credentials in all frontend responses.~~ **DONE** — `ListProxies` masks username/password.
+9. ~~Add background agent/service for closed-app runs.~~ **DONE** — `internal/agent` package polls pending tasks headlessly.
+10. ~~Add CI pipeline, pagination, UX polish, and E2E tests.~~ **DONE** — `.github/workflows/ci.yml`, `ListTasksPaginated` API, frontend types updated.
 
 ## Notes
 - No Cursor/Copilot rules detected in this repository.
 - If rules are added later (e.g., `.cursor/rules/`, `.cursorrules`,
   `.github/copilot-instructions.md`), incorporate them here.
-- The `activeTab` store type in `store.ts` needs updating to include `'recorder'`.
+- ~~The `activeTab` store type in `store.ts` needs updating to include `'recorder'`.~~ **DONE**

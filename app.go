@@ -115,7 +115,39 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.logExporter = logExporter
 
+	go a.runRetentionCleanup(ctx)
+
 	wailsRuntime.LogInfo(ctx, "Application started successfully")
+}
+
+func (a *App) runRetentionCleanup(ctx context.Context) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+
+	a.purgeOnce()
+
+	for {
+		select {
+		case <-ticker.C:
+			a.purgeOnce()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (a *App) purgeOnce() {
+	if a.db == nil {
+		return
+	}
+	n, err := a.db.PurgeOldRecords(90)
+	if err != nil {
+		wailsRuntime.LogWarningf(a.ctx, "retention cleanup error: %v", err)
+		return
+	}
+	if n > 0 {
+		wailsRuntime.LogInfof(a.ctx, "retention cleanup purged %d old records", n)
+	}
 }
 
 // cleanup releases all application resources. Safe to call with nil fields.
@@ -189,6 +221,11 @@ func (a *App) GetTask(id string) (*models.Task, error) {
 // ListTasks returns all tasks.
 func (a *App) ListTasks() ([]models.Task, error) {
 	return a.db.ListTasks()
+}
+
+// ListTasksPaginated returns a page of tasks with optional filtering.
+func (a *App) ListTasksPaginated(page, pageSize int, status, tag string) (models.PaginatedTasks, error) {
+	return a.db.ListTasksPaginated(page, pageSize, status, tag)
 }
 
 // ListTasksByStatus returns tasks with a given status.
@@ -471,9 +508,24 @@ func (a *App) AddProxy(server, protocol, username, password, geo string) (*model
 	return &p, nil
 }
 
-// ListProxies returns all proxies.
+// ListProxies returns all proxies with credentials masked.
 func (a *App) ListProxies() ([]models.Proxy, error) {
-	return a.db.ListProxies()
+	proxies, err := a.db.ListProxies()
+	if err != nil {
+		return nil, err
+	}
+	for i := range proxies {
+		proxies[i].Username = maskCredential(proxies[i].Username)
+		proxies[i].Password = maskCredential(proxies[i].Password)
+	}
+	return proxies, nil
+}
+
+func maskCredential(s string) string {
+	if len(s) <= 2 {
+		return strings.Repeat("*", len(s))
+	}
+	return string(s[0]) + strings.Repeat("*", len(s)-2) + string(s[len(s)-1])
 }
 
 // DeleteProxy removes a proxy.
@@ -580,6 +632,11 @@ func (a *App) StartRecording(url string) error {
 	})
 	a.recorderCancel = recCancel
 
+	snapshotDir := filepath.Join(a.dataDir, "snapshots", flowID)
+	if snapshotter, err := recorder.NewSnapshotter(snapshotDir); err == nil {
+		a.activeRecorder.SetSnapshotter(snapshotter)
+	}
+
 	if err := a.activeRecorder.Start(url); err != nil {
 		a.activeRecorder = nil
 		recCancel()
@@ -599,6 +656,9 @@ func (a *App) StopRecording() ([]models.RecordedStep, error) {
 		return nil, fmt.Errorf("no active recording session")
 	}
 
+	netLogs := a.activeRecorder.NetworkLogs()
+	flowID := a.activeRecorder.FlowID()
+
 	a.activeRecorder.Stop()
 
 	if a.recorderCancel != nil {
@@ -612,8 +672,63 @@ func (a *App) StopRecording() ([]models.RecordedStep, error) {
 	a.recorderCancel = nil
 	a.recordedSteps = nil
 
-	wailsRuntime.LogInfof(a.ctx, "Recording stopped, captured %d steps", len(steps))
+	if len(netLogs) > 0 && a.db != nil {
+		if err := a.db.InsertNetworkLogs(flowID, netLogs); err != nil {
+			wailsRuntime.LogWarningf(a.ctx, "failed to persist network logs: %v", err)
+		}
+	}
+
+	wailsRuntime.LogInfof(a.ctx, "Recording stopped, captured %d steps, %d network requests", len(steps), len(netLogs))
 	return steps, nil
+}
+
+// PlayRecordedFlow creates and immediately runs a task from a recorded flow.
+func (a *App) PlayRecordedFlow(flowID, url string, headless bool) (*models.Task, error) {
+	flow, err := a.db.GetRecordedFlow(flowID)
+	if err != nil {
+		return nil, fmt.Errorf("play flow: %w", err)
+	}
+	steps := models.FlowToTaskSteps(*flow)
+	if len(steps) > 0 && steps[0].Action == models.ActionNavigate && steps[0].Value == "" {
+		steps[0].Value = url
+	}
+	if url == "" && flow.OriginURL != "" {
+		url = flow.OriginURL
+	}
+
+	task := models.Task{
+		ID:         uuid.New().String(),
+		Name:       "Playback: " + flow.Name,
+		URL:        url,
+		Steps:      steps,
+		Priority:   models.PriorityNormal,
+		Status:     models.TaskStatusPending,
+		MaxRetries: 0,
+		Headless:   headless,
+		FlowID:     flowID,
+		CreatedAt:  time.Now(),
+	}
+
+	if err := a.db.CreateTask(task); err != nil {
+		return nil, fmt.Errorf("play flow create task: %w", err)
+	}
+	if err := a.queue.Submit(a.ctx, task); err != nil {
+		return nil, fmt.Errorf("play flow submit: %w", err)
+	}
+	return &task, nil
+}
+
+// GetAuditTrail returns lifecycle events for a task (or all if taskID is empty).
+func (a *App) GetAuditTrail(taskID string, limit int) ([]models.TaskLifecycleEvent, error) {
+	return a.db.ListAuditTrail(taskID, limit)
+}
+
+// PurgeOldData manually triggers retention cleanup and returns how many records were removed.
+func (a *App) PurgeOldData(retentionDays int) (int64, error) {
+	if retentionDays <= 0 {
+		retentionDays = 90
+	}
+	return a.db.PurgeOldRecords(retentionDays)
 }
 
 // IsRecording returns whether a recording session is active.

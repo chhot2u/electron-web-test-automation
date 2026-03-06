@@ -124,3 +124,37 @@ export interface QueueMetrics {
   totalCompleted: number;
   totalFailed: number;
 }
+
+export interface PaginatedTasks {
+  tasks: Task[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
+export interface TaskLifecycleEvent {
+  id: string;
+  taskId: string;
+  batchId?: string;
+  fromState: TaskStatus;
+  toState: TaskStatus;
+  error?: string;
+  timestamp: string;
+}
+
+export interface NetworkLog {
+  taskId: string;
+  stepIndex: number;
+  requestUrl: string;
+  method: string;
+  statusCode: number;
+  mimeType?: string;
+  requestHeaders?: string;
+  responseHeaders?: string;
+  requestSize: number;
+  responseSize: number;
+  durationMs: number;
+  error?: string;
+  timestamp: string;
+}

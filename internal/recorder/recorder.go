@@ -7,9 +7,13 @@ import (
 
 	"web-automation/internal/models"
 
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
+	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+
+	"web-automation/internal/logs"
 )
 
 type EventHandler func(step models.RecordedStep)
@@ -23,6 +27,9 @@ type Recorder struct {
 	allocCancel   context.CancelFunc
 	browserCtx    context.Context
 	browserCancel context.CancelFunc
+	netLogger     *logs.NetworkLogger
+	snapshotter   *Snapshotter
+	activeTabID   target.ID
 }
 
 func New(parentCtx context.Context, flowID string, handler EventHandler) *Recorder {
@@ -42,6 +49,7 @@ func (r *Recorder) Start(url string) error {
 
 	r.allocCtx, r.allocCancel = chromedp.NewExecAllocator(r.parentCtx, opts...)
 	r.browserCtx, r.browserCancel = chromedp.NewContext(r.allocCtx)
+	r.netLogger = logs.NewNetworkLogger(r.flowID)
 
 	r.registerListeners()
 
@@ -77,6 +85,30 @@ func (r *Recorder) registerListeners() {
 				return
 			}
 			r.RecordStep(models.ActionNavigate, "", e.Frame.URL)
+		case *target.EventTargetInfoChanged:
+			if e.TargetInfo == nil || e.TargetInfo.Type != "page" {
+				return
+			}
+			if r.activeTabID != "" && e.TargetInfo.TargetID != r.activeTabID {
+				r.activeTabID = e.TargetInfo.TargetID
+				r.RecordStep(models.ActionTabSwitch, "", e.TargetInfo.URL)
+			}
+			if r.activeTabID == "" {
+				r.activeTabID = e.TargetInfo.TargetID
+			}
+		case *network.EventRequestWillBeSent:
+			if r.netLogger != nil {
+				r.netLogger.SetStepIndex(r.stepIndex)
+				r.netLogger.HandleRequestWillBeSent(e)
+			}
+		case *network.EventResponseReceived:
+			if r.netLogger != nil {
+				r.netLogger.HandleResponseReceived(e)
+			}
+		case *network.EventLoadingFinished:
+			if r.netLogger != nil {
+				r.netLogger.HandleLoadingFinished(e, nil)
+			}
 		}
 	})
 }
@@ -87,6 +119,9 @@ func (r *Recorder) enableDomains() error {
 	}
 	if err := chromedp.Run(r.browserCtx, page.Enable()); err != nil {
 		return fmt.Errorf("enable page domain: %w", err)
+	}
+	if err := chromedp.Run(r.browserCtx, network.Enable()); err != nil {
+		return fmt.Errorf("enable network domain: %w", err)
 	}
 	if err := chromedp.Run(r.browserCtx, runtime.AddBinding(bindingName)); err != nil {
 		return fmt.Errorf("add binding %s: %w", bindingName, err)
@@ -139,6 +174,17 @@ func (r *Recorder) FlowID() string {
 	return r.flowID
 }
 
+func (r *Recorder) NetworkLogs() []models.NetworkLog {
+	if r.netLogger == nil {
+		return nil
+	}
+	return r.netLogger.Logs()
+}
+
+func (r *Recorder) SetSnapshotter(s *Snapshotter) {
+	r.snapshotter = s
+}
+
 func (r *Recorder) RecordStep(action models.StepAction, selector, value string) {
 	if r.handler == nil {
 		return
@@ -149,6 +195,11 @@ func (r *Recorder) RecordStep(action models.StepAction, selector, value string) 
 		Selector:  selector,
 		Value:     value,
 		Timestamp: time.Now(),
+	}
+	if r.snapshotter != nil && r.browserCtx != nil {
+		if snap, err := r.snapshotter.CaptureSnapshot(r.browserCtx, r.flowID, r.stepIndex); err == nil {
+			step.SnapshotID = snap.ID
+		}
 	}
 	r.stepIndex++
 	r.handler(step)

@@ -668,3 +668,199 @@ func TestNewApp(t *testing.T) {
 		t.Fatal("NewApp returned nil")
 	}
 }
+
+func TestAppListProxiesMasksCredentials(t *testing.T) {
+	app := setupTestApp(t)
+
+	_, err := app.AddProxy("proxy.example.com:8080", "http", "admin", "secret123", "US")
+	if err != nil {
+		t.Fatalf("AddProxy: %v", err)
+	}
+
+	proxies, err := app.ListProxies()
+	if err != nil {
+		t.Fatalf("ListProxies: %v", err)
+	}
+	if len(proxies) != 1 {
+		t.Fatalf("proxy count: got %d, want 1", len(proxies))
+	}
+	if proxies[0].Username == "admin" {
+		t.Error("username should be masked")
+	}
+	if proxies[0].Password == "secret123" {
+		t.Error("password should be masked")
+	}
+	if !strings.Contains(proxies[0].Username, "*") {
+		t.Error("masked username should contain asterisks")
+	}
+	if !strings.Contains(proxies[0].Password, "*") {
+		t.Error("masked password should contain asterisks")
+	}
+}
+
+func TestMaskCredential(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", ""},
+		{"a", "*"},
+		{"ab", "**"},
+		{"abc", "a*c"},
+		{"admin", "a***n"},
+		{"password123", "p*********3"},
+	}
+	for _, tc := range tests {
+		got := maskCredential(tc.input)
+		if got != tc.want {
+			t.Errorf("maskCredential(%q): got %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestAppListTasksPaginated(t *testing.T) {
+	app := setupTestApp(t)
+
+	for i := 0; i < 10; i++ {
+		_, err := app.CreateTask(
+			fmt.Sprintf("Task %d", i),
+			"https://example.com",
+			validSteps(),
+			models.ProxyConfig{},
+			5, false, nil,
+		)
+		if err != nil {
+			t.Fatalf("CreateTask %d: %v", i, err)
+		}
+	}
+
+	result, err := app.ListTasksPaginated(1, 3, "", "")
+	if err != nil {
+		t.Fatalf("ListTasksPaginated: %v", err)
+	}
+	if result.Total != 10 {
+		t.Errorf("Total: got %d, want 10", result.Total)
+	}
+	if len(result.Tasks) != 3 {
+		t.Errorf("Tasks length: got %d, want 3", len(result.Tasks))
+	}
+	if result.TotalPages != 4 {
+		t.Errorf("TotalPages: got %d, want 4", result.TotalPages)
+	}
+
+	result2, err := app.ListTasksPaginated(4, 3, "", "")
+	if err != nil {
+		t.Fatalf("ListTasksPaginated page 4: %v", err)
+	}
+	if len(result2.Tasks) != 1 {
+		t.Errorf("last page Tasks: got %d, want 1", len(result2.Tasks))
+	}
+}
+
+func TestAppGetAuditTrail(t *testing.T) {
+	app := setupTestApp(t)
+
+	events, err := app.GetAuditTrail("", 100)
+	if err != nil {
+		t.Fatalf("GetAuditTrail: %v", err)
+	}
+	if events == nil {
+		t.Error("expected non-nil events slice")
+	}
+}
+
+func TestAppPurgeOldData(t *testing.T) {
+	app := setupTestApp(t)
+
+	_, err := app.CreateTask("Old Task", "https://example.com", validSteps(), models.ProxyConfig{}, 5, false, nil)
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	n, err := app.PurgeOldData(90)
+	if err != nil {
+		t.Fatalf("PurgeOldData: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("purged: got %d, want 0 (task is new)", n)
+	}
+}
+
+func TestAppIsRecording(t *testing.T) {
+	app := setupTestApp(t)
+	if app.IsRecording() {
+		t.Error("should not be recording initially")
+	}
+}
+
+func TestAppStopRecordingNoSession(t *testing.T) {
+	app := setupTestApp(t)
+	_, err := app.StopRecording()
+	if err == nil {
+		t.Error("expected error when no active recording session")
+	}
+}
+
+func TestAppCreateRecordedFlow(t *testing.T) {
+	app := setupTestApp(t)
+
+	steps := []models.RecordedStep{
+		{Index: 0, Action: models.ActionNavigate, Value: "https://example.com"},
+		{Index: 1, Action: models.ActionClick, Selector: "#btn"},
+	}
+
+	flow, err := app.CreateRecordedFlow("Test Flow", "A test", "https://example.com", steps)
+	if err != nil {
+		t.Fatalf("CreateRecordedFlow: %v", err)
+	}
+	if flow.Name != "Test Flow" {
+		t.Errorf("Name: got %q, want %q", flow.Name, "Test Flow")
+	}
+	if len(flow.Steps) != 2 {
+		t.Errorf("Steps: got %d, want 2", len(flow.Steps))
+	}
+
+	got, err := app.GetRecordedFlow(flow.ID)
+	if err != nil {
+		t.Fatalf("GetRecordedFlow: %v", err)
+	}
+	if got.Name != "Test Flow" {
+		t.Errorf("got Name: %q, want %q", got.Name, "Test Flow")
+	}
+}
+
+func TestAppListRecordedFlows(t *testing.T) {
+	app := setupTestApp(t)
+
+	steps := []models.RecordedStep{
+		{Index: 0, Action: models.ActionNavigate, Value: "https://example.com"},
+	}
+	_, _ = app.CreateRecordedFlow("Flow 1", "", "https://example.com", steps)
+	_, _ = app.CreateRecordedFlow("Flow 2", "", "https://example.com", steps)
+
+	flows, err := app.ListRecordedFlows()
+	if err != nil {
+		t.Fatalf("ListRecordedFlows: %v", err)
+	}
+	if len(flows) != 2 {
+		t.Errorf("flow count: got %d, want 2", len(flows))
+	}
+}
+
+func TestAppDeleteRecordedFlow(t *testing.T) {
+	app := setupTestApp(t)
+
+	steps := []models.RecordedStep{
+		{Index: 0, Action: models.ActionNavigate, Value: "https://example.com"},
+	}
+	flow, _ := app.CreateRecordedFlow("Delete Me", "", "https://example.com", steps)
+
+	if err := app.DeleteRecordedFlow(flow.ID); err != nil {
+		t.Fatalf("DeleteRecordedFlow: %v", err)
+	}
+
+	_, err := app.GetRecordedFlow(flow.ID)
+	if err == nil {
+		t.Error("expected error after deleting flow")
+	}
+}

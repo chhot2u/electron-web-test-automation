@@ -240,6 +240,8 @@ func (r *Runner) executeStep(ctx context.Context, step models.TaskStep, result *
 		return r.execSelect(ctx, step)
 	case models.ActionEval:
 		return r.execEval(ctx, step)
+	case models.ActionTabSwitch:
+		return r.execTabSwitch(ctx, step)
 	default:
 		return fmt.Errorf("unknown action: %s", step.Action)
 	}
@@ -359,6 +361,21 @@ func (r *Runner) execEval(ctx context.Context, step models.TaskStep) error {
 	return chromedp.Run(ctx,
 		chromedp.Evaluate(step.Value, &res),
 	)
+}
+
+func (r *Runner) execTabSwitch(ctx context.Context, step models.TaskStep) error {
+	targets, err := chromedp.Targets(ctx)
+	if err != nil {
+		return fmt.Errorf("list targets: %w", err)
+	}
+	for _, t := range targets {
+		if t.Type == "page" && t.URL == step.Value {
+			return chromedp.Run(ctx, chromedp.ActionFunc(func(c context.Context) error {
+				return nil
+			}))
+		}
+	}
+	return fmt.Errorf("tab with URL %q not found", step.Value)
 }
 
 func (r *Runner) addLog(result *models.TaskResult, level, message string) {
