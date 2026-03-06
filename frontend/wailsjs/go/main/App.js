@@ -26,16 +26,24 @@ export function CreateTask(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['main']['App']['CreateTask'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
+export function CreateTaskFromFlow(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['main']['App']['CreateTaskFromFlow'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
 export function DeleteProxy(arg1) {
   return window['go']['main']['App']['DeleteProxy'](arg1);
+}
+
+export function DeleteRecordedFlow(arg1) {
+  return window['go']['main']['App']['DeleteRecordedFlow'](arg1);
 }
 
 export function DeleteTask(arg1) {
   return window['go']['main']['App']['DeleteTask'](arg1);
 }
 
-export function DeleteRecordedFlow(arg1) {
-  return window['go']['main']['App']['DeleteRecordedFlow'](arg1);
+export function ExportBatchLogs(arg1) {
+  return window['go']['main']['App']['ExportBatchLogs'](arg1);
 }
 
 export function ExportResultsCSV() {
@@ -46,24 +54,24 @@ export function ExportResultsJSON() {
   return window['go']['main']['App']['ExportResultsJSON']();
 }
 
-export function ExportBatchLogs(arg1) {
-  return window['go']['main']['App']['ExportBatchLogs'](arg1);
-}
-
 export function ExportTaskLogs(arg1) {
   return window['go']['main']['App']['ExportTaskLogs'](arg1);
 }
 
-export function GetRunningCount() {
-  return window['go']['main']['App']['GetRunningCount']();
+export function GetBatchProgress(arg1) {
+  return window['go']['main']['App']['GetBatchProgress'](arg1);
 }
 
 export function GetQueueMetrics() {
   return window['go']['main']['App']['GetQueueMetrics']();
 }
 
-export function GetBatchProgress(arg1) {
-  return window['go']['main']['App']['GetBatchProgress'](arg1);
+export function GetRecordedFlow(arg1) {
+  return window['go']['main']['App']['GetRecordedFlow'](arg1);
+}
+
+export function GetRunningCount() {
+  return window['go']['main']['App']['GetRunningCount']();
 }
 
 export function GetTask(arg1) {
@@ -74,32 +82,36 @@ export function GetTaskStats() {
   return window['go']['main']['App']['GetTaskStats']();
 }
 
-export function ListProxies() {
-  return window['go']['main']['App']['ListProxies']();
+export function ListDOMSnapshots(arg1) {
+  return window['go']['main']['App']['ListDOMSnapshots'](arg1);
 }
 
-export function ListTasks() {
-  return window['go']['main']['App']['ListTasks']();
+export function ListProxies() {
+  return window['go']['main']['App']['ListProxies']();
 }
 
 export function ListRecordedFlows() {
   return window['go']['main']['App']['ListRecordedFlows']();
 }
 
+export function ListTasks() {
+  return window['go']['main']['App']['ListTasks']();
+}
+
 export function ListTasksByBatch(arg1) {
   return window['go']['main']['App']['ListTasksByBatch'](arg1);
+}
+
+export function ListTasksByStatus(arg1) {
+  return window['go']['main']['App']['ListTasksByStatus'](arg1);
 }
 
 export function RetryFailedBatch(arg1) {
   return window['go']['main']['App']['RetryFailedBatch'](arg1);
 }
 
-export function ListDOMSnapshots(arg1) {
-  return window['go']['main']['App']['ListDOMSnapshots'](arg1);
-}
-
-export function ListTasksByStatus(arg1) {
-  return window['go']['main']['App']['ListTasksByStatus'](arg1);
+export function SaveDOMSnapshot(arg1) {
+  return window['go']['main']['App']['SaveDOMSnapshot'](arg1);
 }
 
 export function StartAllPending() {
@@ -112,12 +124,4 @@ export function StartTask(arg1) {
 
 export function UpdateTask(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['main']['App']['UpdateTask'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
-}
-
-export function GetRecordedFlow(arg1) {
-  return window['go']['main']['App']['GetRecordedFlow'](arg1);
-}
-
-export function SaveDOMSnapshot(arg1) {
-  return window['go']['main']['App']['SaveDOMSnapshot'](arg1);
 }

@@ -171,13 +171,16 @@ func (q *Queue) RunningCount() int {
 }
 
 // Metrics returns a snapshot of queue metrics.
+// Queued = tasks waiting for a concurrency slot.
+// Running = tasks currently executing.
+// Pending = Queued + Running (total in-flight).
 func (q *Queue) Metrics() models.QueueMetrics {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	metrics := q.metrics
 	metrics.Running = len(q.running)
 	metrics.Queued = len(q.pending)
-	metrics.Pending = len(q.pending)
+	metrics.Pending = len(q.pending) + len(q.running)
 	return metrics
 }
 

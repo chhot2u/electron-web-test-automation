@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/csv"
+	"sync"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"web-automation/internal/models"
 	"web-automation/internal/proxy"
 	"web-automation/internal/queue"
+	"web-automation/internal/recorder"
 	"web-automation/internal/validation"
 
 	"github.com/google/uuid"
@@ -34,6 +36,12 @@ type App struct {
 	dataDir      string
 	batchEngine  *batch.Engine
 	logExporter  *logs.Exporter
+
+	// Recorder state (nil when not recording)
+	recorderMu     sync.Mutex
+	activeRecorder *recorder.Recorder
+	recorderCancel context.CancelFunc
+	recordedSteps  []models.RecordedStep
 }
 
 // NewApp creates a new App application struct.
@@ -543,4 +551,73 @@ func (a *App) ExportResultsCSV() (string, error) {
 	}
 
 	return exportPath, nil
+}
+
+
+// --- Recorder API ---
+
+// StartRecording opens a browser and starts capturing interactions.
+func (a *App) StartRecording(url string) error {
+	a.recorderMu.Lock()
+	defer a.recorderMu.Unlock()
+
+	if a.activeRecorder != nil {
+		return fmt.Errorf("recording already in progress")
+	}
+
+	if strings.TrimSpace(url) == "" {
+		return fmt.Errorf("start recording: url is required")
+	}
+
+	flowID := uuid.New().String()
+	recCtx, recCancel := context.WithCancel(a.ctx)
+
+	a.recordedSteps = nil
+	a.activeRecorder = recorder.New(recCtx, flowID, func(step models.RecordedStep) {
+		a.recorderMu.Lock()
+		a.recordedSteps = append(a.recordedSteps, step)
+		a.recorderMu.Unlock()
+		wailsRuntime.EventsEmit(a.ctx, "recorder:step", step)
+	})
+	a.recorderCancel = recCancel
+
+	if err := a.activeRecorder.Start(); err != nil {
+		a.activeRecorder = nil
+		recCancel()
+		return fmt.Errorf("start recording: %w", err)
+	}
+
+	wailsRuntime.LogInfof(a.ctx, "Recording started for flow %s at %s", flowID, url)
+	return nil
+}
+
+// StopRecording stops the active recording session and returns captured steps.
+func (a *App) StopRecording() ([]models.RecordedStep, error) {
+	a.recorderMu.Lock()
+	defer a.recorderMu.Unlock()
+
+	if a.activeRecorder == nil {
+		return nil, fmt.Errorf("no active recording session")
+	}
+
+	if a.recorderCancel != nil {
+		a.recorderCancel()
+	}
+
+	steps := make([]models.RecordedStep, len(a.recordedSteps))
+	copy(steps, a.recordedSteps)
+
+	a.activeRecorder = nil
+	a.recorderCancel = nil
+	a.recordedSteps = nil
+
+	wailsRuntime.LogInfof(a.ctx, "Recording stopped, captured %d steps", len(steps))
+	return steps, nil
+}
+
+// IsRecording returns whether a recording session is active.
+func (a *App) IsRecording() bool {
+	a.recorderMu.Lock()
+	defer a.recorderMu.Unlock()
+	return a.activeRecorder != nil
 }

@@ -13,6 +13,16 @@ type AdvancedBatchInput struct {
 	Proxy          ProxyConfig `json:"proxy"`
 	Tags           []string    `json:"tags,omitempty"`
 	AutoStart      bool        `json:"autoStart"`
+	Headless       *bool       `json:"headless,omitempty"` // nil defaults to true for backwards compatibility
+}
+
+// BatchHeadless returns the effective headless setting.
+// Defaults to true when Headless is nil (backwards compatible).
+func (i AdvancedBatchInput) BatchHeadless() bool {
+	if i.Headless == nil {
+		return true
+	}
+	return *i.Headless
 }
 
 // BatchGroup tracks a group of tasks created together from one batch operation.

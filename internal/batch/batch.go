@@ -75,7 +75,7 @@ func (e *Engine) CreateBatchFromFlow(ctx context.Context, flow models.RecordedFl
 			CreatedAt:  time.Now(),
 			BatchID:    batchID,
 			FlowID:     flow.ID,
-			Headless:   true,
+			Headless:   input.BatchHeadless(),
 		}
 
 		if err := e.db.CreateTask(task); err != nil {

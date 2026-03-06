@@ -14,6 +14,12 @@ type TaskLifecycleEvent struct {
 }
 
 // QueueMetrics provides a snapshot of queue state.
+//
+// Field semantics:
+//   - Running: tasks currently executing in browser workers.
+//   - Queued: tasks waiting for a concurrency slot (submitted but not yet running).
+//   - Pending: total tasks not yet finished (Queued + Running).
+//   - TotalSubmitted/TotalCompleted/TotalFailed: lifetime counters since queue creation.
 type QueueMetrics struct {
 	Running        int   `json:"running"`
 	Queued         int   `json:"queued"`

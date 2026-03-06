@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -21,6 +22,47 @@ import (
 )
 
 const defaultTimeout = 30 * time.Second
+
+const (
+	// MaxEvalScriptSize is the maximum allowed length of an eval script in bytes.
+	MaxEvalScriptSize = 10_000
+
+	// maxEvalScriptSizeDisplay is used in error messages.
+	maxEvalScriptSizeDisplay = "10000"
+)
+
+// ErrEvalScriptTooLarge is returned when an eval script exceeds MaxEvalScriptSize.
+var ErrEvalScriptTooLarge = fmt.Errorf("eval script exceeds maximum allowed size of %s bytes", maxEvalScriptSizeDisplay)
+
+// ErrEvalScriptEmpty is returned when an eval script is empty.
+var ErrEvalScriptEmpty = errors.New("eval script must not be empty")
+
+// dangerousPatterns are blocked in eval scripts to reduce sandbox-escape risk.
+var dangerousPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\bchild_process\b`),
+	regexp.MustCompile(`(?i)\brequire\s*\(`),
+	regexp.MustCompile(`(?i)\bprocess\.exit\b`),
+	regexp.MustCompile(`(?i)\bprocess\.env\b`),
+	regexp.MustCompile(`(?i)\bfs\s*\.\s*(read|write|unlink|mkdir|rmdir)`),
+	regexp.MustCompile(`(?i)\b__dirname\b`),
+	regexp.MustCompile(`(?i)\b__filename\b`),
+}
+
+// validateEvalScript checks an eval script for size, emptiness, and dangerous patterns.
+func validateEvalScript(script string) error {
+	if strings.TrimSpace(script) == "" {
+		return ErrEvalScriptEmpty
+	}
+	if len(script) > MaxEvalScriptSize {
+		return ErrEvalScriptTooLarge
+	}
+	for _, pat := range dangerousPatterns {
+		if pat.MatchString(script) {
+			return fmt.Errorf("eval script contains blocked pattern: %s", pat.String())
+		}
+	}
+	return nil
+}
 
 // Runner executes browser automation tasks using chromedp.
 type Runner struct {
@@ -57,7 +99,7 @@ func (r *Runner) RunTask(ctx context.Context, task models.Task) (*models.TaskRes
 		ExtractedData: make(map[string]string),
 	}
 
-	allocCtx, allocCancel := r.createAllocator(ctx, task.Proxy)
+	allocCtx, allocCancel := r.createAllocator(ctx, task.Proxy, task.Headless)
 	defer allocCancel()
 
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
@@ -84,13 +126,20 @@ func (r *Runner) RunTask(ctx context.Context, task models.Task) (*models.TaskRes
 }
 
 // createAllocator builds a chromedp allocator with safe option copying and optional proxy.
-func (r *Runner) createAllocator(ctx context.Context, proxyConfig models.ProxyConfig) (context.Context, context.CancelFunc) {
+// The headless parameter respects the task's preference unless forceHeadless is enabled.
+func (r *Runner) createAllocator(ctx context.Context, proxyConfig models.ProxyConfig, headless bool) (context.Context, context.CancelFunc) {
 	// Copy default options to avoid mutating the shared slice.
 	opts := make([]chromedp.ExecAllocatorOption, len(chromedp.DefaultExecAllocatorOptions))
 	copy(opts, chromedp.DefaultExecAllocatorOptions[:])
 
+	// Respect forceHeadless override; otherwise use the task's headless preference.
+	useHeadless := headless
+	if r.forceHeadless {
+		useHeadless = true
+	}
+
 	opts = append(opts,
-		chromedp.Flag("headless", true),
+		chromedp.Flag("headless", useHeadless),
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
@@ -302,6 +351,9 @@ var ErrEvalNotAllowed = errors.New("eval action is not allowed: runner has allow
 func (r *Runner) execEval(ctx context.Context, step models.TaskStep) error {
 	if !r.allowEval.Load() {
 		return ErrEvalNotAllowed
+	}
+	if err := validateEvalScript(step.Value); err != nil {
+		return fmt.Errorf("eval validation failed: %w", err)
 	}
 	var res any
 	return chromedp.Run(ctx,

@@ -311,7 +311,7 @@ func TestCreateAllocatorWithoutProxy(t *testing.T) {
 	runner := &Runner{screenshotDir: t.TempDir()}
 
 	ctx := context.Background()
-	allocCtx, allocCancel := runner.createAllocator(ctx, models.ProxyConfig{})
+	allocCtx, allocCancel := runner.createAllocator(ctx, models.ProxyConfig{}, true)
 	defer allocCancel()
 
 	if allocCtx == nil {
@@ -329,7 +329,7 @@ func TestCreateAllocatorWithProxy(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	allocCtx, allocCancel := runner.createAllocator(ctx, proxy)
+	allocCtx, allocCancel := runner.createAllocator(ctx, proxy, true)
 	defer allocCancel()
 
 	if allocCtx == nil {
@@ -346,7 +346,7 @@ func TestCreateAllocatorDoesNotMutateDefaults(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		_, cancel := runner.createAllocator(ctx, models.ProxyConfig{
 			Server: "proxy.example.com:8080",
-		})
+		}, true)
 		cancel()
 	}
 
@@ -479,5 +479,144 @@ func TestSetAllowEval(t *testing.T) {
 	runner.SetAllowEval(false)
 	if runner.allowEval.Load() {
 		t.Fatal("allowEval should be false after SetAllowEval(false)")
+	}
+}
+
+func TestValidateEvalScript(t *testing.T) {
+	tests := []struct {
+		name    string
+		script  string
+		wantErr bool
+		errMsg  string
+	}{
+		{"valid simple expression", "1 + 1", false, ""},
+		{"valid DOM access", "document.querySelector('#test').textContent", false, ""},
+		{"valid JSON extraction", "JSON.stringify(window.performance.timing)", false, ""},
+		{"empty string", "", true, "eval script must not be empty"},
+		{"whitespace only", "   \t\n  ", true, "eval script must not be empty"},
+		{"too large", strings.Repeat("a", MaxEvalScriptSize+1), true, "eval script exceeds maximum allowed size"},
+		{"exactly max size", strings.Repeat("a", MaxEvalScriptSize), false, ""},
+		{"blocked require", "const fs = require('fs')", true, "blocked pattern"},
+		{"blocked require spaced", "require ( 'child_process' )", true, "blocked pattern"},
+		{"blocked process.exit", "process.exit(1)", true, "blocked pattern"},
+		{"blocked process.env", "console.log(process.env.SECRET)", true, "blocked pattern"},
+		{"blocked child_process", "child_process.exec('ls')", true, "blocked pattern"},
+		{"blocked fs.readFile", "fs.readFile('/etc/passwd')", true, "blocked pattern"},
+		{"blocked fs.writeFile", "fs.writeFile('/tmp/x', 'data')", true, "blocked pattern"},
+		{"blocked __dirname", "console.log(__dirname)", true, "blocked pattern"},
+		{"blocked __filename", "console.log(__filename)", true, "blocked pattern"},
+		{"case insensitive require", "REQUIRE('fs')", true, "blocked pattern"},
+		{"case insensitive process", "Process.Exit(0)", true, "blocked pattern"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateEvalScript(tc.script)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tc.errMsg != "" && !strings.Contains(err.Error(), tc.errMsg) {
+					t.Errorf("error %q should contain %q", err.Error(), tc.errMsg)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestExecEvalValidationIntegration(t *testing.T) {
+	runner := &Runner{screenshotDir: t.TempDir()}
+	runner.allowEval.Store(true)
+
+	// Blocked pattern should be rejected even when eval is allowed
+	step := models.TaskStep{
+		Action: models.ActionEval,
+		Value:  "require('child_process').exec('ls')",
+	}
+	err := runner.execEval(context.Background(), step)
+	if err == nil {
+		t.Fatal("expected validation error for dangerous pattern")
+	}
+	if !strings.Contains(err.Error(), "eval validation failed") {
+		t.Errorf("expected 'eval validation failed' error, got: %v", err)
+	}
+
+	// Empty script should be rejected
+	step.Value = ""
+	err = runner.execEval(context.Background(), step)
+	if err == nil {
+		t.Fatal("expected validation error for empty script")
+	}
+	if !strings.Contains(err.Error(), "eval validation failed") {
+		t.Errorf("expected 'eval validation failed' error, got: %v", err)
+	}
+}
+
+func TestExecEvalReenabledAfterDisable(t *testing.T) {
+	runner := &Runner{screenshotDir: t.TempDir()}
+
+	// Enable then disable
+	runner.SetAllowEval(true)
+	runner.SetAllowEval(false)
+
+	step := models.TaskStep{
+		Action: models.ActionEval,
+		Value:  "document.title",
+	}
+	err := runner.execEval(context.Background(), step)
+	if err != ErrEvalNotAllowed {
+		t.Errorf("expected ErrEvalNotAllowed after re-disabling, got: %v", err)
+	}
+}
+
+func TestCreateAllocatorRespectsHeadless(t *testing.T) {
+	tests := []struct {
+		name          string
+		taskHeadless  bool
+		forceHeadless bool
+	}{
+		{"headless true, force false", true, false},
+		{"headless false, force false", false, false},
+		{"headless false, force true overrides", false, true},
+		{"headless true, force true", true, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &Runner{screenshotDir: t.TempDir(), forceHeadless: tc.forceHeadless}
+
+			ctx := context.Background()
+			allocCtx, allocCancel := runner.createAllocator(ctx, models.ProxyConfig{}, tc.taskHeadless)
+			defer allocCancel()
+
+			if allocCtx == nil {
+				t.Fatal("allocator context should not be nil")
+			}
+			// Verify the allocator was created successfully with no panic.
+			// The headless flag is set inside chromedp options which are not directly inspectable,
+			// but we verify the code path doesn't error.
+		})
+	}
+}
+
+func TestSetForceHeadless(t *testing.T) {
+	runner := &Runner{screenshotDir: t.TempDir()}
+
+	if runner.forceHeadless {
+		t.Fatal("forceHeadless should default to false")
+	}
+
+	runner.SetForceHeadless(true)
+	if !runner.forceHeadless {
+		t.Fatal("forceHeadless should be true after SetForceHeadless(true)")
+	}
+
+	runner.SetForceHeadless(false)
+	if runner.forceHeadless {
+		t.Fatal("forceHeadless should be false after SetForceHeadless(false)")
 	}
 }

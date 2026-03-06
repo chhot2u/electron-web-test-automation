@@ -448,3 +448,128 @@ func TestHandleSuccessPath(t *testing.T) {
 		t.Error("Result.Success should be true")
 	}
 }
+
+func TestMetricsInitialState(t *testing.T) {
+	q, _ := setupTestQueue(t, 10, nil, nil)
+	defer q.Stop()
+
+	m := q.Metrics()
+	if m.Running != 0 {
+		t.Errorf("Running: got %d, want 0", m.Running)
+	}
+	if m.Queued != 0 {
+		t.Errorf("Queued: got %d, want 0", m.Queued)
+	}
+	if m.Pending != 0 {
+		t.Errorf("Pending: got %d, want 0", m.Pending)
+	}
+	if m.TotalSubmitted != 0 {
+		t.Errorf("TotalSubmitted: got %d, want 0", m.TotalSubmitted)
+	}
+	if m.TotalCompleted != 0 {
+		t.Errorf("TotalCompleted: got %d, want 0", m.TotalCompleted)
+	}
+	if m.TotalFailed != 0 {
+		t.Errorf("TotalFailed: got %d, want 0", m.TotalFailed)
+	}
+}
+
+func TestMetricsRunningAndPending(t *testing.T) {
+	q, _ := setupTestQueue(t, 10, nil, nil)
+	defer q.Stop()
+
+	// Manually inject running and pending entries
+	q.mu.Lock()
+	q.running["r-1"] = func() {}
+	q.running["r-2"] = func() {}
+	q.pending["p-1"] = func() {}
+	q.pending["p-2"] = func() {}
+	q.pending["p-3"] = func() {}
+	q.mu.Unlock()
+
+	m := q.Metrics()
+	if m.Running != 2 {
+		t.Errorf("Running: got %d, want 2", m.Running)
+	}
+	if m.Queued != 3 {
+		t.Errorf("Queued: got %d, want 3", m.Queued)
+	}
+	// Pending = Queued + Running
+	if m.Pending != 5 {
+		t.Errorf("Pending: got %d, want 5 (Queued + Running)", m.Pending)
+	}
+}
+
+func TestMetricsPendingEqualsQueuedPlusRunning(t *testing.T) {
+	q, _ := setupTestQueue(t, 10, nil, nil)
+	defer q.Stop()
+
+	// Only running, no queued
+	q.mu.Lock()
+	q.running["r-1"] = func() {}
+	q.mu.Unlock()
+
+	m := q.Metrics()
+	if m.Pending != m.Queued+m.Running {
+		t.Errorf("Pending (%d) should equal Queued (%d) + Running (%d)",
+			m.Pending, m.Queued, m.Running)
+	}
+
+	// Only queued, no running
+	q.mu.Lock()
+	delete(q.running, "r-1")
+	q.pending["p-1"] = func() {}
+	q.mu.Unlock()
+
+	m = q.Metrics()
+	if m.Pending != m.Queued+m.Running {
+		t.Errorf("Pending (%d) should equal Queued (%d) + Running (%d)",
+			m.Pending, m.Queued, m.Running)
+	}
+}
+
+func TestMetricsTotalSubmittedIncrementsOnSubmit(t *testing.T) {
+	q, db := setupTestQueue(t, 10, nil, nil)
+	defer q.Stop()
+
+	task := makeTestTask("metrics-submit-1")
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if err := q.Submit(context.Background(), task); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	// Give goroutine time to start
+	time.Sleep(200 * time.Millisecond)
+
+	m := q.Metrics()
+	if m.TotalSubmitted < 1 {
+		t.Errorf("TotalSubmitted: got %d, want >= 1", m.TotalSubmitted)
+	}
+}
+
+func TestMetricsAfterStop(t *testing.T) {
+	q, _ := setupTestQueue(t, 10, nil, nil)
+
+	// Inject fake entries
+	q.mu.Lock()
+	q.running["r-1"] = func() {}
+	q.pending["p-1"] = func() {}
+	q.mu.Unlock()
+
+	q.Stop()
+
+	m := q.Metrics()
+	// After Stop, running and pending should be cleared
+	if m.Running != 0 {
+		t.Errorf("Running after Stop: got %d, want 0", m.Running)
+	}
+	if m.Queued != 0 {
+		t.Errorf("Queued after Stop: got %d, want 0", m.Queued)
+	}
+	if m.Pending != 0 {
+		t.Errorf("Pending after Stop: got %d, want 0", m.Pending)
+	}
+}
