@@ -193,6 +193,21 @@
         "edit": true,
         "bash": true
       }
+    },
+    "solution-ranker": {
+      "description": "Solution variant generation and ranking specialist. Generates 3 distinct approaches for any coding task, scores them across 8 quality dimensions, and recommends the optimal path before code is written.",
+      "mode": "primary",
+      "model": "gitlab/duo-chat-opus-4-6",
+      "model": "gitlab/duo-chat-sonnet-4-6",
+      "model": "gitlab/duo-chat-gpt-5-2",
+      "model": "gitlab/duo-chat-gpt-5-2-codex",
+      "prompt": "{file:prompts/agents/solution-ranker.txt}",
+      "tools": {
+        "read": true,
+        "bash": true,
+        "write": false,
+        "edit": false
+      }
     }
   },
   "command": {
@@ -332,6 +347,12 @@
       "description": "Optimize, compare, and audit prompts for better LLM results",
       "template": "{file:commands/prompt.md}\n\n$ARGUMENTS",
       "agent": "pro-prompts-enhanced"
+    },
+    "rank-solutions": {
+      "description": "Generate, score, and rank solution variants for better code decisions",
+      "template": "{file:commands/rank-solutions.md}\n\n$ARGUMENTS",
+      "agent": "solution-ranker",
+      "subtask": true
     }
   },
   "mcp": {

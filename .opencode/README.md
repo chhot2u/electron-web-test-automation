@@ -50,7 +50,7 @@ opencode
 
 ## Features
 
-### Agents (12)
+### Agents (13)
 
 | Agent | Description |
 |-------|-------------|
@@ -66,8 +66,9 @@ opencode
 | go-reviewer | Go code review |
 | go-build-resolver | Go build errors |
 | database-reviewer | Database optimization |
+| solution-ranker | Generate, score, and rank solution variants |
 
-### Commands (24)
+### Commands (25)
 
 | Command | Description |
 |---------|-------------|
@@ -79,6 +80,7 @@ opencode
 | `/e2e` | E2E tests |
 | `/refactor-clean` | Remove dead code |
 | `/orchestrate` | Multi-agent workflow |
+| `/rank-solutions` | Generate, score, and rank solution variants |
 | `/learn` | Extract patterns |
 | `/checkpoint` | Save progress |
 | `/verify` | Verification loop |
