@@ -181,10 +181,12 @@ func (m *Manager) checkProxy(ctx context.Context, proxy models.Proxy) {
 		proxyURL.User = url.UserPassword(proxy.Username, proxy.Password)
 	}
 
+	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
 	client := &http.Client{
-		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+		Transport: transport,
 		Timeout:   10 * time.Second,
 	}
+	defer transport.CloseIdleConnections()
 
 	start := time.Now()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.config.HealthCheckURL, nil)

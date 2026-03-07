@@ -65,6 +65,7 @@ export interface TaskResult {
   extractedData?: Record<string, string>;
   screenshots?: string[];
   logs: LogEntry[];
+  stepLogs?: StepLog[];
   duration: number;
   error?: string;
 }
@@ -152,10 +153,23 @@ export interface TaskLifecycleEvent {
 }
 
 export interface QueueMetrics {
-  pending: number;
   running: number;
-  completed: number;
-  failed: number;
-  avgDuration: number;
-  throughput: number;
+  queued: number;
+  pending: number;
+  totalSubmitted: number;
+  totalCompleted: number;
+  totalFailed: number;
+}
+
+export interface StepLog {
+  taskId: string;
+  stepIndex: number;
+  action: string;
+  selector?: string;
+  value?: string;
+  snapshotId?: string;
+  errorCode?: string;
+  errorMsg?: string;
+  durationMs: number;
+  startedAt: string;
 }

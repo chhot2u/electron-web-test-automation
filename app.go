@@ -643,10 +643,11 @@ func (a *App) ListProxies() ([]models.Proxy, error) {
 }
 
 func maskCredential(s string) string {
-	if len(s) <= 2 {
-		return strings.Repeat("*", len(s))
+	runes := []rune(s)
+	if len(runes) <= 2 {
+		return strings.Repeat("*", len(runes))
 	}
-	return string(s[0]) + strings.Repeat("*", len(s)-2) + string(s[len(s)-1])
+	return string(runes[0]) + strings.Repeat("*", len(runes)-2) + string(runes[len(runes)-1])
 }
 
 // DeleteProxy removes a proxy.
@@ -888,7 +889,7 @@ func (a *App) PurgeOldData(retentionDays int) (int64, error) {
 		return 0, err
 	}
 	if retentionDays <= 0 {
-		retentionDays = 90
+		retentionDays = a.config.RetentionDays
 	}
 	return a.db.PurgeOldRecords(retentionDays)
 }

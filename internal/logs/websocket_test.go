@@ -458,3 +458,68 @@ func TestSetCallbackNil(t *testing.T) {
 		},
 	})
 }
+
+func TestCallbackNoDeadlock(t *testing.T) {
+	logger := NewWebSocketLogger("ws-deadlock")
+
+	var received []models.WebSocketLog
+	var mu sync.Mutex
+	logger.SetCallback(func(log models.WebSocketLog) {
+		mu.Lock()
+		defer mu.Unlock()
+		received = append(received, log)
+		_ = logger.Logs()
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			reqID := network.RequestID("req-dl-" + string(rune('A'+n%26)))
+			logger.HandleCreated(&network.EventWebSocketCreated{
+				RequestID: reqID,
+				URL:       "wss://example.com/dl",
+			})
+			logger.HandleFrameError(&network.EventWebSocketFrameError{
+				RequestID:    reqID,
+				ErrorMessage: "test error",
+			})
+			logger.HandleClosed(&network.EventWebSocketClosed{
+				RequestID: reqID,
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	mu.Lock()
+	count := len(received)
+	mu.Unlock()
+	if count == 0 {
+		t.Error("expected callback invocations from concurrent events")
+	}
+}
+
+func TestHandleFrameErrorCallback(t *testing.T) {
+	logger := NewWebSocketLogger("ws-err-cb")
+	var got models.WebSocketLog
+	logger.SetCallback(func(log models.WebSocketLog) {
+		got = log
+	})
+
+	logger.HandleCreated(&network.EventWebSocketCreated{
+		RequestID: "req-err-cb",
+		URL:       "wss://example.com/err",
+	})
+	logger.HandleFrameError(&network.EventWebSocketFrameError{
+		RequestID:    "req-err-cb",
+		ErrorMessage: "frame decode error",
+	})
+
+	if got.EventType != models.WSEventError {
+		t.Errorf("expected callback with WSEventError, got %q", got.EventType)
+	}
+	if got.ErrorMessage != "frame decode error" {
+		t.Errorf("expected error message %q, got %q", "frame decode error", got.ErrorMessage)
+	}
+}

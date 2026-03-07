@@ -748,9 +748,22 @@ func (db *DB) ListRecordedFlows() ([]models.RecordedFlow, error) {
 	return flows, nil
 }
 
-// DeleteRecordedFlow removes a recorded flow.
+// DeleteRecordedFlow removes a recorded flow and its associated data.
 func (db *DB) DeleteRecordedFlow(id string) error {
-	res, err := db.conn.Exec(`DELETE FROM recorded_flows WHERE id = ?`, id)
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("begin delete flow tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM dom_snapshots WHERE flow_id = ?`, id); err != nil {
+		return fmt.Errorf("delete dom snapshots for flow %s: %w", id, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM websocket_logs WHERE flow_id = ?`, id); err != nil {
+		return fmt.Errorf("delete websocket logs for flow %s: %w", id, err)
+	}
+
+	res, err := tx.Exec(`DELETE FROM recorded_flows WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete recorded flow %s: %w", id, err)
 	}
@@ -760,7 +773,7 @@ func (db *DB) DeleteRecordedFlow(id string) error {
 		}
 		return fmt.Errorf("flow %s not found", id)
 	}
-	return nil
+	return tx.Commit()
 }
 
 // --- DOM Snapshots ---

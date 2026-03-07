@@ -29,9 +29,11 @@ type Agent struct {
 
 // Config holds settings for creating a background Agent.
 type Config struct {
-	DataDir        string
-	MaxConcurrency int
-	PollInterval   time.Duration
+	DataDir             string
+	MaxConcurrency      int
+	PollInterval        time.Duration
+	HealthCheckInterval int
+	MaxProxyFailures    int
 }
 
 func New(cfg Config) (*Agent, error) {
@@ -75,10 +77,18 @@ func New(cfg Config) (*Agent, error) {
 		log.Printf("[agent] task %s -> %s", event.TaskID, event.Status)
 	})
 
+	healthInterval := cfg.HealthCheckInterval
+	if healthInterval <= 0 {
+		healthInterval = 300
+	}
+	maxFailures := cfg.MaxProxyFailures
+	if maxFailures <= 0 {
+		maxFailures = 3
+	}
 	pm := proxy.NewManager(db, models.ProxyPoolConfig{
 		Strategy:            models.RotationRoundRobin,
-		HealthCheckInterval: 300,
-		MaxFailures:         3,
+		HealthCheckInterval: healthInterval,
+		MaxFailures:         maxFailures,
 	})
 	q.SetProxyManager(pm)
 

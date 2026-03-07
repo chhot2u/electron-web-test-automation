@@ -989,6 +989,52 @@ func TestDeleteRecordedFlowNotFound(t *testing.T) {
 	}
 }
 
+func TestDeleteRecordedFlowCascade(t *testing.T) {
+	db := setupTestDB(t)
+	flow := makeFlow("cascade-flow", "Cascade Test")
+	if err := db.CreateRecordedFlow(flow); err != nil {
+		t.Fatalf("CreateRecordedFlow: %v", err)
+	}
+
+	snap := models.DOMSnapshot{
+		ID: "cascade-snap-1", FlowID: "cascade-flow", StepIndex: 0,
+		HTML: "<html></html>", ScreenshotPath: "/tmp/s.png",
+		URL: "https://example.com", CapturedAt: time.Now(),
+	}
+	if err := db.CreateDOMSnapshot(snap); err != nil {
+		t.Fatalf("CreateDOMSnapshot: %v", err)
+	}
+
+	wsLogs := []models.WebSocketLog{
+		{FlowID: "cascade-flow", StepIndex: 0, RequestID: "ws-1",
+			URL: "wss://example.com", EventType: models.WSEventCreated,
+			Timestamp: time.Now()},
+	}
+	if err := db.InsertWebSocketLogs("cascade-flow", wsLogs); err != nil {
+		t.Fatalf("InsertWebSocketLogs: %v", err)
+	}
+
+	if err := db.DeleteRecordedFlow("cascade-flow"); err != nil {
+		t.Fatalf("DeleteRecordedFlow: %v", err)
+	}
+
+	snaps, err := db.ListDOMSnapshots("cascade-flow")
+	if err != nil {
+		t.Fatalf("ListDOMSnapshots: %v", err)
+	}
+	if len(snaps) != 0 {
+		t.Errorf("expected 0 snapshots after cascade delete, got %d", len(snaps))
+	}
+
+	remaining, err := db.ListWebSocketLogs("cascade-flow")
+	if err != nil {
+		t.Fatalf("ListWebSocketLogs: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Errorf("expected 0 websocket logs after cascade delete, got %d", len(remaining))
+	}
+}
+
 // --- DOM Snapshots Tests ---
 
 func TestCreateAndListDOMSnapshots(t *testing.T) {

@@ -63,8 +63,19 @@ func (w *WebSocketLogger) append(log models.WebSocketLog) {
 		return
 	}
 	w.logs = append(w.logs, log)
-	if w.callback != nil {
-		w.callback(log)
+}
+
+func (w *WebSocketLogger) appendAndNotify(log models.WebSocketLog) {
+	w.mu.Lock()
+	if len(w.logs) >= w.maxLogs {
+		w.mu.Unlock()
+		return
+	}
+	w.logs = append(w.logs, log)
+	cb := w.callback
+	w.mu.Unlock()
+	if cb != nil {
+		cb(log)
 	}
 }
 
@@ -74,11 +85,12 @@ func (w *WebSocketLogger) HandleCreated(ev *network.EventWebSocketCreated) {
 		return
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	w.urls[ev.RequestID] = ev.URL
-	w.append(models.WebSocketLog{
+	stepIdx := w.stepIndex
+	w.mu.Unlock()
+	w.appendAndNotify(models.WebSocketLog{
 		FlowID:    w.flowID,
-		StepIndex: w.stepIndex,
+		StepIndex: stepIdx,
 		RequestID: string(ev.RequestID),
 		URL:       ev.URL,
 		EventType: models.WSEventCreated,
@@ -92,11 +104,12 @@ func (w *WebSocketLogger) HandleHandshake(ev *network.EventWebSocketHandshakeRes
 		return
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	url := w.urls[ev.RequestID]
-	w.append(models.WebSocketLog{
+	stepIdx := w.stepIndex
+	w.mu.Unlock()
+	w.appendAndNotify(models.WebSocketLog{
 		FlowID:    w.flowID,
-		StepIndex: w.stepIndex,
+		StepIndex: stepIdx,
 		RequestID: string(ev.RequestID),
 		URL:       url,
 		EventType: models.WSEventHandshake,
@@ -110,11 +123,12 @@ func (w *WebSocketLogger) HandleFrameSent(ev *network.EventWebSocketFrameSent) {
 		return
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	url := w.urls[ev.RequestID]
-	w.append(models.WebSocketLog{
+	stepIdx := w.stepIndex
+	w.mu.Unlock()
+	w.appendAndNotify(models.WebSocketLog{
 		FlowID:         w.flowID,
-		StepIndex:      w.stepIndex,
+		StepIndex:      stepIdx,
 		RequestID:      string(ev.RequestID),
 		URL:            url,
 		EventType:      models.WSEventFrameSent,
@@ -132,11 +146,12 @@ func (w *WebSocketLogger) HandleFrameReceived(ev *network.EventWebSocketFrameRec
 		return
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	url := w.urls[ev.RequestID]
-	w.append(models.WebSocketLog{
+	stepIdx := w.stepIndex
+	w.mu.Unlock()
+	w.appendAndNotify(models.WebSocketLog{
 		FlowID:         w.flowID,
-		StepIndex:      w.stepIndex,
+		StepIndex:      stepIdx,
 		RequestID:      string(ev.RequestID),
 		URL:            url,
 		EventType:      models.WSEventFrameReceived,
@@ -154,12 +169,13 @@ func (w *WebSocketLogger) HandleClosed(ev *network.EventWebSocketClosed) {
 		return
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	url := w.urls[ev.RequestID]
 	delete(w.urls, ev.RequestID)
-	w.append(models.WebSocketLog{
+	stepIdx := w.stepIndex
+	w.mu.Unlock()
+	w.appendAndNotify(models.WebSocketLog{
 		FlowID:    w.flowID,
-		StepIndex: w.stepIndex,
+		StepIndex: stepIdx,
 		RequestID: string(ev.RequestID),
 		URL:       url,
 		EventType: models.WSEventClosed,
@@ -173,11 +189,12 @@ func (w *WebSocketLogger) HandleFrameError(ev *network.EventWebSocketFrameError)
 		return
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	url := w.urls[ev.RequestID]
-	w.append(models.WebSocketLog{
+	stepIdx := w.stepIndex
+	w.mu.Unlock()
+	w.appendAndNotify(models.WebSocketLog{
 		FlowID:       w.flowID,
-		StepIndex:    w.stepIndex,
+		StepIndex:    stepIdx,
 		RequestID:    string(ev.RequestID),
 		URL:          url,
 		EventType:    models.WSEventError,
