@@ -21,7 +21,7 @@
   let errorMessage = '';
   let submitting = false;
 
-  const actions = ['navigate', 'click', 'type', 'wait', 'screenshot', 'extract', 'scroll', 'select'];
+  const actions = ['navigate', 'click', 'type', 'wait', 'screenshot', 'extract', 'scroll', 'select', 'if_element', 'if_text', 'if_url', 'loop', 'end_loop', 'break_loop', 'goto', 'solve_captcha'];
 
   function addStep() {
     steps = [...steps, { action: 'click', selector: '', value: '' }];

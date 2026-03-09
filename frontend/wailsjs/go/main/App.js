@@ -173,3 +173,83 @@ export function UpdateRecordedFlow(arg1) {
 export function UpdateTask(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
   return window['go']['main']['App']['UpdateTask'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
 }
+
+export function CreateSchedule(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
+  return window['go']['main']['App']['CreateSchedule'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+}
+
+export function GetSchedule(arg1) {
+  return window['go']['main']['App']['GetSchedule'](arg1);
+}
+
+export function ListSchedules() {
+  return window['go']['main']['App']['ListSchedules']();
+}
+
+export function UpdateSchedule(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10) {
+  return window['go']['main']['App']['UpdateSchedule'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
+}
+
+export function DeleteSchedule(arg1) {
+  return window['go']['main']['App']['DeleteSchedule'](arg1);
+}
+
+export function ToggleSchedule(arg1, arg2) {
+  return window['go']['main']['App']['ToggleSchedule'](arg1, arg2);
+}
+
+export function SaveCaptchaConfig(arg1, arg2) {
+  return window['go']['main']['App']['SaveCaptchaConfig'](arg1, arg2);
+}
+
+export function GetCaptchaConfig() {
+  return window['go']['main']['App']['GetCaptchaConfig']();
+}
+
+export function ListCaptchaConfigs() {
+  return window['go']['main']['App']['ListCaptchaConfigs']();
+}
+
+export function DeleteCaptchaConfig(arg1) {
+  return window['go']['main']['App']['DeleteCaptchaConfig'](arg1);
+}
+
+export function TestCaptchaConfig(arg1) {
+  return window['go']['main']['App']['TestCaptchaConfig'](arg1);
+}
+
+export function CreateVisualBaseline(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CreateVisualBaseline'](arg1, arg2, arg3);
+}
+
+export function ListVisualBaselines() {
+  return window['go']['main']['App']['ListVisualBaselines']();
+}
+
+export function DeleteVisualBaseline(arg1) {
+  return window['go']['main']['App']['DeleteVisualBaseline'](arg1);
+}
+
+export function CompareVisual(arg1) {
+  return window['go']['main']['App']['CompareVisual'](arg1);
+}
+
+export function ListVisualDiffs(arg1) {
+  return window['go']['main']['App']['ListVisualDiffs'](arg1);
+}
+
+export function ListVisualDiffsByTask(arg1) {
+  return window['go']['main']['App']['ListVisualDiffsByTask'](arg1);
+}
+
+export function GetVisualDiff(arg1) {
+  return window['go']['main']['App']['GetVisualDiff'](arg1);
+}
+
+export function PauseBatch(arg1) {
+  return window['go']['main']['App']['PauseBatch'](arg1);
+}
+
+export function ResumeBatch(arg1) {
+  return window['go']['main']['App']['ResumeBatch'](arg1);
+}

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"flowpilot/internal/captcha"
 	"flowpilot/internal/logs"
 	"flowpilot/internal/models"
 
@@ -72,6 +73,7 @@ type Runner struct {
 	allowEval     atomic.Bool
 	forceHeadless atomic.Bool
 	exec          Executor
+	captchaSolver captcha.Solver
 }
 
 // NewRunner creates a new browser runner. Eval steps are blocked by default.
@@ -87,6 +89,11 @@ func NewRunner(screenshotDir string) (*Runner, error) {
 // SetForceHeadless enforces headless mode on all tasks when enabled.
 func (r *Runner) SetForceHeadless(force bool) {
 	r.forceHeadless.Store(force)
+}
+
+// SetCaptchaSolver sets the CAPTCHA solver used by solve_captcha steps.
+func (r *Runner) SetCaptchaSolver(solver captcha.Solver) {
+	r.captchaSolver = solver
 }
 
 // SetAllowEval configures whether the runner permits eval step execution.
@@ -183,22 +190,96 @@ func (r *Runner) createAllocator(ctx context.Context, proxyConfig models.ProxyCo
 	return chromedp.NewExecAllocator(ctx, opts...)
 }
 
-// runSteps iterates through each task step and executes it.
+// runSteps executes task steps using a program-counter (PC) based approach
+// to support conditional logic, loops, and goto jumps.
 func (r *Runner) runSteps(browserCtx context.Context, steps []models.TaskStep, result *models.TaskResult, netLogger *logs.NetworkLogger) error {
 	stepLogger := logs.NewStepLogger(result.TaskID)
 	defer func() { result.StepLogs = stepLogger.Logs() }()
 
-	for i, step := range steps {
-		netLogger.SetStepIndex(i)
-		r.addLog(result, "info", fmt.Sprintf("step %d: %s", i+1, step.Action))
+	labelIndex := buildLabelIndex(steps)
+
+	type loopFrame struct {
+		startPC     int
+		maxIter     int
+		currentIter int
+	}
+	var loopStack []loopFrame
+
+	vars := result.ExtractedData
+
+	pc := 0
+	for pc < len(steps) {
+		step := steps[pc]
+		netLogger.SetStepIndex(pc)
+		r.addLog(result, "info", fmt.Sprintf("step %d: %s", pc+1, step.Action))
+
+		switch step.Action {
+		case models.ActionLoop:
+			maxIter, _ := strconv.Atoi(step.Value)
+			if maxIter <= 0 {
+				maxIter = 100
+			}
+			loopStack = append(loopStack, loopFrame{startPC: pc, maxIter: maxIter, currentIter: 0})
+			pc++
+			continue
+
+		case models.ActionEndLoop:
+			if len(loopStack) == 0 {
+				return fmt.Errorf("step %d: end_loop without matching loop", pc+1)
+			}
+			top := &loopStack[len(loopStack)-1]
+			top.currentIter++
+			if top.currentIter < top.maxIter {
+				pc = top.startPC + 1
+				continue
+			}
+			loopStack = loopStack[:len(loopStack)-1]
+			pc++
+			continue
+
+		case models.ActionBreakLoop:
+			if len(loopStack) == 0 {
+				return fmt.Errorf("step %d: break_loop without matching loop", pc+1)
+			}
+			endPC := findEndLoop(steps, loopStack[len(loopStack)-1].startPC)
+			if endPC < 0 {
+				return fmt.Errorf("step %d: no matching end_loop found", pc+1)
+			}
+			loopStack = loopStack[:len(loopStack)-1]
+			pc = endPC + 1
+			continue
+
+		case models.ActionGoto:
+			target, ok := labelIndex[step.JumpTo]
+			if !ok {
+				return fmt.Errorf("step %d: goto label %q not found", pc+1, step.JumpTo)
+			}
+			pc = target
+			continue
+
+		case models.ActionIfElement, models.ActionIfText, models.ActionIfURL:
+			condMet, err := r.evaluateCondition(browserCtx, step, vars)
+			if err != nil {
+				r.addLog(result, "warn", fmt.Sprintf("step %d condition error: %v", pc+1, err))
+				condMet = false
+			}
+			if condMet && step.JumpTo != "" {
+				target, ok := labelIndex[step.JumpTo]
+				if !ok {
+					return fmt.Errorf("step %d: jumpTo label %q not found", pc+1, step.JumpTo)
+				}
+				pc = target
+				continue
+			}
+			pc++
+			continue
+		}
 
 		timeout := defaultTimeout
 		if step.Timeout > 0 {
 			timeout = time.Duration(step.Timeout) * time.Millisecond
 		}
-
-		start := stepLogger.StartStep(i, step.Action, step.Selector, step.Value, "")
-
+		start := stepLogger.StartStep(pc, step.Action, step.Selector, step.Value, "")
 		stepCtx, stepCancel := context.WithTimeout(browserCtx, timeout)
 		err := r.executeStep(stepCtx, step, result)
 		stepCancel()
@@ -207,15 +288,24 @@ func (r *Runner) runSteps(browserCtx context.Context, steps []models.TaskStep, r
 		if err != nil {
 			code = models.ClassifyError(err)
 		}
-		stepLogger.EndStep(i, step.Action, step.Selector, step.Value, "", start, err, code)
+		stepLogger.EndStep(pc, step.Action, step.Selector, step.Value, "", start, err, code)
 
 		if err != nil {
-			r.addLog(result, "error", fmt.Sprintf("step %d failed: %v", i+1, err))
-			result.Error = fmt.Sprintf("step %d (%s) failed: %v", i+1, step.Action, err)
+			r.addLog(result, "error", fmt.Sprintf("step %d failed: %v", pc+1, err))
+			result.Error = fmt.Sprintf("step %d (%s) failed: %v", pc+1, step.Action, err)
 			return err
 		}
 
-		r.addLog(result, "info", fmt.Sprintf("step %d completed", i+1))
+		if step.Action == models.ActionExtract && step.VarName != "" {
+			if val, ok := result.ExtractedData[step.Value]; ok {
+				vars[step.VarName] = val
+			} else if val, ok := result.ExtractedData[step.Selector]; ok {
+				vars[step.VarName] = val
+			}
+		}
+
+		r.addLog(result, "info", fmt.Sprintf("step %d completed", pc+1))
+		pc++
 	}
 	return nil
 }
@@ -281,6 +371,8 @@ func (r *Runner) executeStep(ctx context.Context, step models.TaskStep, result *
 		return r.execEval(ctx, step)
 	case models.ActionTabSwitch:
 		return r.execTabSwitch(ctx, step)
+	case models.ActionSolveCaptcha:
+		return r.execSolveCaptcha(ctx, step, result)
 	default:
 		return fmt.Errorf("unknown action: %s", step.Action)
 	}
@@ -417,6 +509,44 @@ func (r *Runner) execTabSwitch(ctx context.Context, step models.TaskStep) error 
 	return fmt.Errorf("tab with URL %q not found", step.Value)
 }
 
+func (r *Runner) execSolveCaptcha(ctx context.Context, step models.TaskStep, result *models.TaskResult) error {
+	if r.captchaSolver == nil {
+		return fmt.Errorf("captcha solver not configured")
+	}
+
+	var pageURL string
+	if err := r.exec.Run(ctx, chromedp.Location(&pageURL)); err != nil {
+		return fmt.Errorf("get page url for captcha: %w", err)
+	}
+
+	req := models.CaptchaSolveRequest{
+		Type:    models.CaptchaType(step.Value),
+		SiteKey: step.Selector,
+		PageURL: pageURL,
+	}
+
+	solveResult, err := r.captchaSolver.Solve(ctx, req)
+	if err != nil {
+		return fmt.Errorf("solve captcha: %w", err)
+	}
+
+	key := "captcha_token"
+	if step.VarName != "" {
+		key = step.VarName
+	}
+	result.ExtractedData[key] = solveResult.Token
+
+	if step.Value == string(models.CaptchaTypeRecaptchaV2) || step.Value == string(models.CaptchaTypeRecaptchaV3) {
+		js := fmt.Sprintf(`document.getElementById("g-recaptcha-response").innerHTML = %q;`, solveResult.Token)
+		var res interface{}
+		if err := r.exec.Run(ctx, chromedp.Evaluate(js, &res)); err != nil {
+			r.addLog(result, "warn", fmt.Sprintf("inject captcha token: %v", err))
+		}
+	}
+
+	return nil
+}
+
 func (r *Runner) addLog(result *models.TaskResult, level, message string) {
 	result.Logs = append(result.Logs, models.LogEntry{
 		Timestamp: time.Now(),
@@ -428,4 +558,101 @@ func (r *Runner) addLog(result *models.TaskResult, level, message string) {
 // ClearCookies clears cookies in a browser context.
 func ClearCookies(ctx context.Context) error {
 	return chromedp.Run(ctx, network.ClearBrowserCookies())
+}
+
+func buildLabelIndex(steps []models.TaskStep) map[string]int {
+	idx := make(map[string]int, len(steps))
+	for i, s := range steps {
+		if s.Label != "" {
+			idx[s.Label] = i
+		}
+	}
+	return idx
+}
+
+func findEndLoop(steps []models.TaskStep, loopPC int) int {
+	depth := 0
+	for i := loopPC; i < len(steps); i++ {
+		if steps[i].Action == models.ActionLoop {
+			depth++
+		}
+		if steps[i].Action == models.ActionEndLoop {
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func (r *Runner) evaluateCondition(ctx context.Context, step models.TaskStep, vars map[string]string) (bool, error) {
+	switch step.Action {
+	case models.ActionIfElement:
+		var nodes []*cdp.Node
+		err := r.exec.Run(ctx, chromedp.Nodes(step.Selector, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)))
+		if err != nil {
+			return false, fmt.Errorf("if_element check: %w", err)
+		}
+		switch step.Condition {
+		case "not_exists":
+			return len(nodes) == 0, nil
+		default:
+			return len(nodes) > 0, nil
+		}
+
+	case models.ActionIfText:
+		var text string
+		if err := r.exec.Run(ctx,
+			chromedp.Text(step.Selector, &text, chromedp.ByQuery),
+		); err != nil {
+			return false, nil
+		}
+		return evaluateTextCondition(step.Condition, text, vars)
+
+	case models.ActionIfURL:
+		var currentURL string
+		if err := r.exec.Run(ctx, chromedp.Location(&currentURL)); err != nil {
+			return false, fmt.Errorf("if_url get location: %w", err)
+		}
+		return evaluateTextCondition(step.Condition, currentURL, vars)
+
+	default:
+		return false, fmt.Errorf("unknown condition action: %s", step.Action)
+	}
+}
+
+func evaluateTextCondition(condition, text string, vars map[string]string) (bool, error) {
+	for k, v := range vars {
+		condition = strings.ReplaceAll(condition, "{{"+k+"}}", v)
+	}
+
+	parts := strings.SplitN(condition, ":", 2)
+	if len(parts) != 2 {
+		return strings.Contains(text, condition), nil
+	}
+
+	op, val := parts[0], parts[1]
+	switch op {
+	case "contains":
+		return strings.Contains(text, val), nil
+	case "not_contains":
+		return !strings.Contains(text, val), nil
+	case "equals":
+		return text == val, nil
+	case "not_equals":
+		return text != val, nil
+	case "starts_with":
+		return strings.HasPrefix(text, val), nil
+	case "ends_with":
+		return strings.HasSuffix(text, val), nil
+	case "matches":
+		re, err := regexp.Compile(val)
+		if err != nil {
+			return false, fmt.Errorf("invalid regex in condition: %w", err)
+		}
+		return re.MatchString(text), nil
+	default:
+		return false, fmt.Errorf("unknown condition operator: %s", op)
+	}
 }

@@ -44,16 +44,24 @@ var (
 )
 
 var validActions = map[models.StepAction]bool{
-	models.ActionNavigate:   true,
-	models.ActionClick:      true,
-	models.ActionType:       true,
-	models.ActionWait:       true,
-	models.ActionScreenshot: true,
-	models.ActionExtract:    true,
-	models.ActionScroll:     true,
-	models.ActionSelect:     true,
-	models.ActionEval:       true,
-	models.ActionTabSwitch:  true,
+	models.ActionNavigate:     true,
+	models.ActionClick:        true,
+	models.ActionType:         true,
+	models.ActionWait:         true,
+	models.ActionScreenshot:   true,
+	models.ActionExtract:      true,
+	models.ActionScroll:       true,
+	models.ActionSelect:       true,
+	models.ActionEval:         true,
+	models.ActionTabSwitch:    true,
+	models.ActionIfElement:    true,
+	models.ActionIfText:       true,
+	models.ActionIfURL:        true,
+	models.ActionLoop:         true,
+	models.ActionEndLoop:      true,
+	models.ActionBreakLoop:    true,
+	models.ActionGoto:         true,
+	models.ActionSolveCaptcha: true,
 }
 
 var selectorRequiredActions = map[models.StepAction]bool{

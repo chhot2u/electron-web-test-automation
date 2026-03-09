@@ -28,24 +28,36 @@ const (
 type StepAction string
 
 const (
-	ActionNavigate   StepAction = "navigate"
-	ActionClick      StepAction = "click"
-	ActionType       StepAction = "type"
-	ActionWait       StepAction = "wait"
-	ActionScreenshot StepAction = "screenshot"
-	ActionExtract    StepAction = "extract"
-	ActionScroll     StepAction = "scroll"
-	ActionSelect     StepAction = "select"
-	ActionEval       StepAction = "eval"
-	ActionTabSwitch  StepAction = "tab_switch"
+	ActionNavigate     StepAction = "navigate"
+	ActionClick        StepAction = "click"
+	ActionType         StepAction = "type"
+	ActionWait         StepAction = "wait"
+	ActionScreenshot   StepAction = "screenshot"
+	ActionExtract      StepAction = "extract"
+	ActionScroll       StepAction = "scroll"
+	ActionSelect       StepAction = "select"
+	ActionEval         StepAction = "eval"
+	ActionTabSwitch    StepAction = "tab_switch"
+	ActionIfElement    StepAction = "if_element"
+	ActionIfText       StepAction = "if_text"
+	ActionIfURL        StepAction = "if_url"
+	ActionLoop         StepAction = "loop"
+	ActionEndLoop      StepAction = "end_loop"
+	ActionBreakLoop    StepAction = "break_loop"
+	ActionGoto         StepAction = "goto"
+	ActionSolveCaptcha StepAction = "solve_captcha"
 )
 
 // TaskStep represents a single browser action within a task.
 type TaskStep struct {
-	Action   StepAction `json:"action"`
-	Selector string     `json:"selector,omitempty"`
-	Value    string     `json:"value,omitempty"`
-	Timeout  int        `json:"timeout,omitempty"` // milliseconds
+	Action    StepAction `json:"action"`
+	Selector  string     `json:"selector,omitempty"`
+	Value     string     `json:"value,omitempty"`
+	Timeout   int        `json:"timeout,omitempty"` // milliseconds
+	Condition string     `json:"condition,omitempty"`
+	Label     string     `json:"label,omitempty"`
+	JumpTo    string     `json:"jumpTo,omitempty"`
+	VarName   string     `json:"varName,omitempty"`
 }
 
 // ProxyConfig holds proxy connection details for a task.

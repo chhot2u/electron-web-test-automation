@@ -1,8 +1,8 @@
 package database
 
 import (
-	"fmt"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -2780,5 +2780,583 @@ func TestListTasksByBatchStatusCorruptedJSON(t *testing.T) {
 	_, err := db.ListTasksByBatchStatus(context.Background(), "batch-bstat-corrupt-1", "pending")
 	if err == nil {
 		t.Fatal("expected error from ListTasksByBatchStatus with corrupted JSON")
+	}
+}
+
+// --- Schedule CRUD Tests ---
+
+func makeSchedule(id, name string) models.Schedule {
+	now := time.Now().Truncate(time.Second)
+	next := now.Add(1 * time.Hour)
+	return models.Schedule{
+		ID:       id,
+		Name:     name,
+		CronExpr: "*/15 * * * *",
+		FlowID:   "flow-1",
+		URL:      "https://example.com",
+		ProxyConfig: models.ProxyConfig{
+			Server:   "proxy.example.com:8080",
+			Username: "user",
+			Password: "pass",
+		},
+		Priority:  models.PriorityNormal,
+		Headless:  true,
+		Tags:      []string{"sched-test"},
+		Enabled:   true,
+		NextRunAt: &next,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+}
+
+func TestCreateSchedule(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	s := makeSchedule("sched-1", "Daily Run")
+
+	if err := db.CreateSchedule(ctx, s); err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+
+	got, err := db.GetSchedule(ctx, "sched-1")
+	if err != nil {
+		t.Fatalf("GetSchedule: %v", err)
+	}
+	if got.ID != s.ID {
+		t.Errorf("ID: got %q, want %q", got.ID, s.ID)
+	}
+	if got.Name != s.Name {
+		t.Errorf("Name: got %q, want %q", got.Name, s.Name)
+	}
+	if got.CronExpr != s.CronExpr {
+		t.Errorf("CronExpr: got %q, want %q", got.CronExpr, s.CronExpr)
+	}
+	if got.FlowID != s.FlowID {
+		t.Errorf("FlowID: got %q, want %q", got.FlowID, s.FlowID)
+	}
+	if !got.Enabled {
+		t.Error("expected Enabled=true")
+	}
+	if !got.Headless {
+		t.Error("expected Headless=true")
+	}
+	if got.ProxyConfig.Username != "user" {
+		t.Errorf("proxy username: got %q, want %q", got.ProxyConfig.Username, "user")
+	}
+	if got.ProxyConfig.Password != "pass" {
+		t.Errorf("proxy password: got %q, want %q", got.ProxyConfig.Password, "pass")
+	}
+}
+
+func TestListSchedules(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		s := makeSchedule(fmt.Sprintf("sched-list-%d", i), fmt.Sprintf("Schedule %d", i))
+		if err := db.CreateSchedule(ctx, s); err != nil {
+			t.Fatalf("CreateSchedule %d: %v", i, err)
+		}
+	}
+
+	schedules, err := db.ListSchedules(ctx)
+	if err != nil {
+		t.Fatalf("ListSchedules: %v", err)
+	}
+	if len(schedules) != 3 {
+		t.Errorf("expected 3 schedules, got %d", len(schedules))
+	}
+}
+
+func TestUpdateSchedule(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	s := makeSchedule("sched-upd-1", "Original")
+
+	if err := db.CreateSchedule(ctx, s); err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+
+	s.Name = "Updated"
+	s.CronExpr = "0 9 * * 1-5"
+	s.Enabled = false
+	s.UpdatedAt = time.Now().Truncate(time.Second)
+
+	if err := db.UpdateSchedule(ctx, s); err != nil {
+		t.Fatalf("UpdateSchedule: %v", err)
+	}
+
+	got, err := db.GetSchedule(ctx, "sched-upd-1")
+	if err != nil {
+		t.Fatalf("GetSchedule: %v", err)
+	}
+	if got.Name != "Updated" {
+		t.Errorf("Name: got %q, want %q", got.Name, "Updated")
+	}
+	if got.CronExpr != "0 9 * * 1-5" {
+		t.Errorf("CronExpr: got %q, want %q", got.CronExpr, "0 9 * * 1-5")
+	}
+	if got.Enabled {
+		t.Error("expected Enabled=false")
+	}
+}
+
+func TestDeleteSchedule(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	s := makeSchedule("sched-del-1", "ToDelete")
+
+	if err := db.CreateSchedule(ctx, s); err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+
+	if err := db.DeleteSchedule(ctx, "sched-del-1"); err != nil {
+		t.Fatalf("DeleteSchedule: %v", err)
+	}
+
+	_, err := db.GetSchedule(ctx, "sched-del-1")
+	if err == nil {
+		t.Error("expected error after delete")
+	}
+}
+
+func TestListDueSchedules(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	past := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+	future := time.Now().Add(10 * time.Hour).Truncate(time.Second)
+
+	s1 := makeSchedule("sched-due-1", "Past Due")
+	s1.NextRunAt = &past
+	s1.Enabled = true
+
+	s2 := makeSchedule("sched-due-2", "Future")
+	s2.NextRunAt = &future
+	s2.Enabled = true
+
+	s3 := makeSchedule("sched-due-3", "Disabled Past")
+	s3.NextRunAt = &past
+	s3.Enabled = false
+
+	for _, s := range []models.Schedule{s1, s2, s3} {
+		if err := db.CreateSchedule(ctx, s); err != nil {
+			t.Fatalf("CreateSchedule %s: %v", s.ID, err)
+		}
+	}
+
+	due, err := db.ListDueSchedules(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("ListDueSchedules: %v", err)
+	}
+	if len(due) != 1 {
+		t.Errorf("expected 1 due schedule, got %d", len(due))
+	}
+	if len(due) > 0 && due[0].ID != "sched-due-1" {
+		t.Errorf("expected sched-due-1, got %s", due[0].ID)
+	}
+}
+
+func TestUpdateScheduleRun(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	s := makeSchedule("sched-run-1", "RunTest")
+
+	if err := db.CreateSchedule(ctx, s); err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+
+	lastRun := time.Now().Truncate(time.Second)
+	nextRun := lastRun.Add(15 * time.Minute)
+
+	if err := db.UpdateScheduleRun(ctx, "sched-run-1", lastRun, nextRun); err != nil {
+		t.Fatalf("UpdateScheduleRun: %v", err)
+	}
+
+	got, err := db.GetSchedule(ctx, "sched-run-1")
+	if err != nil {
+		t.Fatalf("GetSchedule: %v", err)
+	}
+	if got.LastRunAt == nil {
+		t.Fatal("LastRunAt is nil after update")
+	}
+	if got.NextRunAt == nil {
+		t.Fatal("NextRunAt is nil after update")
+	}
+}
+
+// --- Captcha Config CRUD Tests ---
+
+func TestCreateCaptchaConfig(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	c := models.CaptchaConfig{
+		ID:        "cap-1",
+		Provider:  models.CaptchaProvider2Captcha,
+		APIKey:    "secret-api-key-123",
+		Enabled:   true,
+		CreatedAt: time.Now().Truncate(time.Second),
+		UpdatedAt: time.Now().Truncate(time.Second),
+	}
+
+	if err := db.CreateCaptchaConfig(ctx, c); err != nil {
+		t.Fatalf("CreateCaptchaConfig: %v", err)
+	}
+
+	got, err := db.GetCaptchaConfig(ctx, "cap-1")
+	if err != nil {
+		t.Fatalf("GetCaptchaConfig: %v", err)
+	}
+	if got.APIKey != "secret-api-key-123" {
+		t.Errorf("APIKey decrypted: got %q, want %q", got.APIKey, "secret-api-key-123")
+	}
+	if got.Provider != models.CaptchaProvider2Captcha {
+		t.Errorf("Provider: got %q, want %q", got.Provider, models.CaptchaProvider2Captcha)
+	}
+	if !got.Enabled {
+		t.Error("expected Enabled=true")
+	}
+}
+
+func TestGetActiveCaptchaConfig(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	c := models.CaptchaConfig{
+		ID:        "cap-active-1",
+		Provider:  models.CaptchaProviderAntiCaptcha,
+		APIKey:    "active-key",
+		Enabled:   true,
+		CreatedAt: time.Now().Truncate(time.Second),
+		UpdatedAt: time.Now().Truncate(time.Second),
+	}
+	if err := db.CreateCaptchaConfig(ctx, c); err != nil {
+		t.Fatalf("CreateCaptchaConfig: %v", err)
+	}
+
+	got, err := db.GetActiveCaptchaConfig(ctx)
+	if err != nil {
+		t.Fatalf("GetActiveCaptchaConfig: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil active config")
+	}
+	if got.ID != "cap-active-1" {
+		t.Errorf("ID: got %q, want %q", got.ID, "cap-active-1")
+	}
+	if got.APIKey != "active-key" {
+		t.Errorf("APIKey: got %q, want %q", got.APIKey, "active-key")
+	}
+}
+
+func TestListCaptchaConfigs(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		c := models.CaptchaConfig{
+			ID:        fmt.Sprintf("cap-list-%d", i),
+			Provider:  models.CaptchaProvider2Captcha,
+			APIKey:    fmt.Sprintf("key-%d", i),
+			Enabled:   i%2 == 0,
+			CreatedAt: time.Now().Truncate(time.Second),
+			UpdatedAt: time.Now().Truncate(time.Second),
+		}
+		if err := db.CreateCaptchaConfig(ctx, c); err != nil {
+			t.Fatalf("CreateCaptchaConfig %d: %v", i, err)
+		}
+	}
+
+	configs, err := db.ListCaptchaConfigs(ctx)
+	if err != nil {
+		t.Fatalf("ListCaptchaConfigs: %v", err)
+	}
+	if len(configs) != 3 {
+		t.Errorf("expected 3 configs, got %d", len(configs))
+	}
+}
+
+func TestDeleteCaptchaConfig(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	c := models.CaptchaConfig{
+		ID:        "cap-del-1",
+		Provider:  models.CaptchaProvider2Captcha,
+		APIKey:    "delete-key",
+		Enabled:   true,
+		CreatedAt: time.Now().Truncate(time.Second),
+		UpdatedAt: time.Now().Truncate(time.Second),
+	}
+	if err := db.CreateCaptchaConfig(ctx, c); err != nil {
+		t.Fatalf("CreateCaptchaConfig: %v", err)
+	}
+
+	if err := db.DeleteCaptchaConfig(ctx, "cap-del-1"); err != nil {
+		t.Fatalf("DeleteCaptchaConfig: %v", err)
+	}
+
+	_, err := db.GetCaptchaConfig(ctx, "cap-del-1")
+	if err == nil {
+		t.Error("expected error after delete")
+	}
+}
+
+// --- Visual Baseline & Diff CRUD Tests ---
+
+func TestCreateVisualBaseline(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	b := models.VisualBaseline{
+		ID:             "vb-1",
+		Name:           "Homepage",
+		TaskID:         "task-1",
+		URL:            "https://example.com",
+		ScreenshotPath: "/tmp/baseline.png",
+		Width:          1920,
+		Height:         1080,
+		CreatedAt:      time.Now().Truncate(time.Second),
+	}
+
+	if err := db.CreateVisualBaseline(ctx, b); err != nil {
+		t.Fatalf("CreateVisualBaseline: %v", err)
+	}
+
+	got, err := db.GetVisualBaseline(ctx, "vb-1")
+	if err != nil {
+		t.Fatalf("GetVisualBaseline: %v", err)
+	}
+	if got.Name != "Homepage" {
+		t.Errorf("Name: got %q, want %q", got.Name, "Homepage")
+	}
+	if got.Width != 1920 {
+		t.Errorf("Width: got %d, want %d", got.Width, 1920)
+	}
+	if got.Height != 1080 {
+		t.Errorf("Height: got %d, want %d", got.Height, 1080)
+	}
+	if got.ScreenshotPath != "/tmp/baseline.png" {
+		t.Errorf("ScreenshotPath: got %q, want %q", got.ScreenshotPath, "/tmp/baseline.png")
+	}
+}
+
+func TestListVisualBaselines(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		b := models.VisualBaseline{
+			ID:             fmt.Sprintf("vb-list-%d", i),
+			Name:           fmt.Sprintf("Baseline %d", i),
+			URL:            "https://example.com",
+			ScreenshotPath: fmt.Sprintf("/tmp/baseline-%d.png", i),
+			Width:          1920,
+			Height:         1080,
+			CreatedAt:      time.Now().Truncate(time.Second),
+		}
+		if err := db.CreateVisualBaseline(ctx, b); err != nil {
+			t.Fatalf("CreateVisualBaseline %d: %v", i, err)
+		}
+	}
+
+	baselines, err := db.ListVisualBaselines(ctx)
+	if err != nil {
+		t.Fatalf("ListVisualBaselines: %v", err)
+	}
+	if len(baselines) != 3 {
+		t.Errorf("expected 3 baselines, got %d", len(baselines))
+	}
+}
+
+func TestDeleteVisualBaseline(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	b := models.VisualBaseline{
+		ID:             "vb-del-1",
+		Name:           "ToDelete",
+		URL:            "https://example.com",
+		ScreenshotPath: "/tmp/del.png",
+		Width:          800,
+		Height:         600,
+		CreatedAt:      time.Now().Truncate(time.Second),
+	}
+	if err := db.CreateVisualBaseline(ctx, b); err != nil {
+		t.Fatalf("CreateVisualBaseline: %v", err)
+	}
+
+	if err := db.DeleteVisualBaseline(ctx, "vb-del-1"); err != nil {
+		t.Fatalf("DeleteVisualBaseline: %v", err)
+	}
+
+	_, err := db.GetVisualBaseline(ctx, "vb-del-1")
+	if err == nil {
+		t.Error("expected error after delete")
+	}
+}
+
+func TestCreateVisualDiff(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	b := models.VisualBaseline{
+		ID:             "vb-diff-base",
+		Name:           "Base",
+		URL:            "https://example.com",
+		ScreenshotPath: "/tmp/base.png",
+		Width:          1920,
+		Height:         1080,
+		CreatedAt:      time.Now().Truncate(time.Second),
+	}
+	if err := db.CreateVisualBaseline(ctx, b); err != nil {
+		t.Fatalf("CreateVisualBaseline: %v", err)
+	}
+
+	d := models.VisualDiff{
+		ID:             "vd-1",
+		BaselineID:     "vb-diff-base",
+		TaskID:         "task-diff-1",
+		ScreenshotPath: "/tmp/new.png",
+		DiffImagePath:  "/tmp/diff.png",
+		DiffPercent:    2.5,
+		PixelCount:     500,
+		Threshold:      5.0,
+		Passed:         true,
+		Width:          1920,
+		Height:         1080,
+		CreatedAt:      time.Now().Truncate(time.Second),
+	}
+
+	if err := db.CreateVisualDiff(ctx, d); err != nil {
+		t.Fatalf("CreateVisualDiff: %v", err)
+	}
+
+	got, err := db.GetVisualDiff(ctx, "vd-1")
+	if err != nil {
+		t.Fatalf("GetVisualDiff: %v", err)
+	}
+	if got.DiffPercent != 2.5 {
+		t.Errorf("DiffPercent: got %.2f, want 2.50", got.DiffPercent)
+	}
+	if got.PixelCount != 500 {
+		t.Errorf("PixelCount: got %d, want 500", got.PixelCount)
+	}
+	if !got.Passed {
+		t.Error("expected Passed=true")
+	}
+	if got.BaselineID != "vb-diff-base" {
+		t.Errorf("BaselineID: got %q, want %q", got.BaselineID, "vb-diff-base")
+	}
+}
+
+func TestListVisualDiffs(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	b := models.VisualBaseline{
+		ID:             "vb-listdiff",
+		Name:           "Base",
+		URL:            "https://example.com",
+		ScreenshotPath: "/tmp/base.png",
+		Width:          800,
+		Height:         600,
+		CreatedAt:      time.Now().Truncate(time.Second),
+	}
+	if err := db.CreateVisualBaseline(ctx, b); err != nil {
+		t.Fatalf("CreateVisualBaseline: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		d := models.VisualDiff{
+			ID:             fmt.Sprintf("vd-list-%d", i),
+			BaselineID:     "vb-listdiff",
+			TaskID:         fmt.Sprintf("task-list-%d", i),
+			ScreenshotPath: fmt.Sprintf("/tmp/new-%d.png", i),
+			DiffImagePath:  fmt.Sprintf("/tmp/diff-%d.png", i),
+			DiffPercent:    float64(i),
+			PixelCount:     int64(i * 100),
+			Threshold:      5.0,
+			Passed:         true,
+			Width:          800,
+			Height:         600,
+			CreatedAt:      time.Now().Truncate(time.Second),
+		}
+		if err := db.CreateVisualDiff(ctx, d); err != nil {
+			t.Fatalf("CreateVisualDiff %d: %v", i, err)
+		}
+	}
+
+	diffs, err := db.ListVisualDiffs(ctx, "vb-listdiff")
+	if err != nil {
+		t.Fatalf("ListVisualDiffs: %v", err)
+	}
+	if len(diffs) != 3 {
+		t.Errorf("expected 3 diffs, got %d", len(diffs))
+	}
+}
+
+func TestListVisualDiffsByTask(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	b := models.VisualBaseline{
+		ID:             "vb-bytask",
+		Name:           "Base",
+		URL:            "https://example.com",
+		ScreenshotPath: "/tmp/base.png",
+		Width:          800,
+		Height:         600,
+		CreatedAt:      time.Now().Truncate(time.Second),
+	}
+	if err := db.CreateVisualBaseline(ctx, b); err != nil {
+		t.Fatalf("CreateVisualBaseline: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		d := models.VisualDiff{
+			ID:             fmt.Sprintf("vd-bytask-%d", i),
+			BaselineID:     "vb-bytask",
+			TaskID:         "shared-task",
+			ScreenshotPath: fmt.Sprintf("/tmp/new-%d.png", i),
+			DiffImagePath:  fmt.Sprintf("/tmp/diff-%d.png", i),
+			DiffPercent:    1.0,
+			PixelCount:     50,
+			Threshold:      5.0,
+			Passed:         true,
+			Width:          800,
+			Height:         600,
+			CreatedAt:      time.Now().Truncate(time.Second),
+		}
+		if err := db.CreateVisualDiff(ctx, d); err != nil {
+			t.Fatalf("CreateVisualDiff %d: %v", i, err)
+		}
+	}
+
+	d3 := models.VisualDiff{
+		ID:             "vd-bytask-other",
+		BaselineID:     "vb-bytask",
+		TaskID:         "other-task",
+		ScreenshotPath: "/tmp/other.png",
+		DiffImagePath:  "/tmp/other-diff.png",
+		DiffPercent:    0.5,
+		PixelCount:     10,
+		Threshold:      5.0,
+		Passed:         true,
+		Width:          800,
+		Height:         600,
+		CreatedAt:      time.Now().Truncate(time.Second),
+	}
+	if err := db.CreateVisualDiff(ctx, d3); err != nil {
+		t.Fatalf("CreateVisualDiff other: %v", err)
+	}
+
+	diffs, err := db.ListVisualDiffsByTask(ctx, "shared-task")
+	if err != nil {
+		t.Fatalf("ListVisualDiffsByTask: %v", err)
+	}
+	if len(diffs) != 2 {
+		t.Errorf("expected 2 diffs for shared-task, got %d", len(diffs))
 	}
 }

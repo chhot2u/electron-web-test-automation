@@ -87,3 +87,43 @@ export function StopRecording():Promise<Array<models.RecordedStep>>;
 export function UpdateRecordedFlow(arg1:models.RecordedFlow):Promise<void>;
 
 export function UpdateTask(arg1:string,arg2:string,arg3:string,arg4:Array<models.TaskStep>,arg5:models.ProxyConfig,arg6:number,arg7:Array<string>,arg8:number):Promise<void>;
+
+export function CreateSchedule(arg1:string,arg2:string,arg3:string,arg4:string,arg5:models.ProxyConfig,arg6:number,arg7:boolean,arg8:Array<string>):Promise<models.Schedule>;
+
+export function GetSchedule(arg1:string):Promise<models.Schedule>;
+
+export function ListSchedules():Promise<Array<models.Schedule>>;
+
+export function UpdateSchedule(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:models.ProxyConfig,arg7:number,arg8:boolean,arg9:Array<string>,arg10:boolean):Promise<void>;
+
+export function DeleteSchedule(arg1:string):Promise<void>;
+
+export function ToggleSchedule(arg1:string,arg2:boolean):Promise<void>;
+
+export function SaveCaptchaConfig(arg1:string,arg2:string):Promise<models.CaptchaConfig>;
+
+export function GetCaptchaConfig():Promise<models.CaptchaConfig>;
+
+export function ListCaptchaConfigs():Promise<Array<models.CaptchaConfig>>;
+
+export function DeleteCaptchaConfig(arg1:string):Promise<void>;
+
+export function TestCaptchaConfig(arg1:string):Promise<number>;
+
+export function CreateVisualBaseline(arg1:string,arg2:string,arg3:string):Promise<models.VisualBaseline>;
+
+export function ListVisualBaselines():Promise<Array<models.VisualBaseline>>;
+
+export function DeleteVisualBaseline(arg1:string):Promise<void>;
+
+export function CompareVisual(arg1:models.DiffRequest):Promise<models.VisualDiff>;
+
+export function ListVisualDiffs(arg1:string):Promise<Array<models.VisualDiff>>;
+
+export function ListVisualDiffsByTask(arg1:string):Promise<Array<models.VisualDiff>>;
+
+export function GetVisualDiff(arg1:string):Promise<models.VisualDiff>;
+
+export function PauseBatch(arg1:string):Promise<void>;
+
+export function ResumeBatch(arg1:string):Promise<void>;

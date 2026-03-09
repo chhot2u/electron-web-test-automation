@@ -1,12 +1,12 @@
 package queue
 
 import (
+	"container/heap"
 	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,12 +83,13 @@ func TestNewQueue(t *testing.T) {
 	}
 
 	q := New(db, runner, 50, nil)
-	if q.maxConcurrency != 50 {
-		t.Errorf("maxConcurrency: got %d, want 50", q.maxConcurrency)
+	if q.workerCount != 50 {
+		t.Errorf("workerCount: got %d, want 50", q.workerCount)
 	}
 	if q.RunningCount() != 0 {
 		t.Errorf("initial RunningCount: got %d, want 0", q.RunningCount())
 	}
+	q.Stop()
 }
 
 func TestSubmitUpdatesStatusToQueued(t *testing.T) {
@@ -107,15 +108,12 @@ func TestSubmitUpdatesStatusToQueued(t *testing.T) {
 		t.Fatalf("Submit: %v", err)
 	}
 
-	// Give the goroutine time to start
 	time.Sleep(200 * time.Millisecond)
 
-	// Check that the task was marked as queued
 	got, err := db.GetTask(context.Background(), "submit-1")
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
-	// It might be queued, running, or even failed (since chromedp won't actually work in test)
 	if got.Status == models.TaskStatusPending {
 		t.Error("task should no longer be pending after submit")
 	}
@@ -159,7 +157,6 @@ func TestCancel(t *testing.T) {
 		t.Fatalf("Submit: %v", err)
 	}
 
-	// Cancel the task
 	time.Sleep(100 * time.Millisecond)
 	if err := q.Cancel("cancel-1"); err != nil {
 		t.Fatalf("Cancel: %v", err)
@@ -177,7 +174,6 @@ func TestCancel(t *testing.T) {
 func TestStopCancelsAllRunning(t *testing.T) {
 	q, _ := setupTestQueue(t, 10, nil, nil)
 
-	// Manually register some fake running tasks
 	q.mu.Lock()
 	cancel1Done := make(chan struct{})
 	cancel2Done := make(chan struct{})
@@ -187,7 +183,6 @@ func TestStopCancelsAllRunning(t *testing.T) {
 
 	q.Stop()
 
-	// Verify all cancels were called
 	select {
 	case <-cancel1Done:
 	case <-time.After(time.Second):
@@ -199,7 +194,6 @@ func TestStopCancelsAllRunning(t *testing.T) {
 		t.Error("cancel for fake-2 was not called")
 	}
 
-	// Verify running map is empty
 	if q.RunningCount() != 0 {
 		t.Errorf("RunningCount after Stop: got %d, want 0", q.RunningCount())
 	}
@@ -207,8 +201,6 @@ func TestStopCancelsAllRunning(t *testing.T) {
 
 func TestStopIdempotent(t *testing.T) {
 	q, _ := setupTestQueue(t, 10, nil, nil)
-
-	// Should not panic when called multiple times
 	q.Stop()
 	q.Stop()
 	q.Stop()
@@ -231,10 +223,8 @@ func TestSubmitBatch(t *testing.T) {
 		t.Fatalf("SubmitBatch: %v", err)
 	}
 
-	// Wait for tasks to be processed
 	time.Sleep(500 * time.Millisecond)
 
-	// Verify all tasks were submitted (status changed from pending)
 	for _, task := range tasks {
 		got, err := db.GetTask(context.Background(), task.ID)
 		if err != nil {
@@ -254,7 +244,6 @@ func TestRunningCount(t *testing.T) {
 		t.Errorf("initial RunningCount: got %d, want 0", q.RunningCount())
 	}
 
-	// Add some fake entries
 	q.mu.Lock()
 	q.running["a"] = func() {}
 	q.running["b"] = func() {}
@@ -266,9 +255,6 @@ func TestRunningCount(t *testing.T) {
 }
 
 func TestConcurrencyLimit(t *testing.T) {
-	var maxConcurrent int64
-	var current int64
-
 	dir := t.TempDir()
 	db, err := database.New(filepath.Join(dir, "test.db"))
 	if err != nil {
@@ -285,23 +271,8 @@ func TestConcurrencyLimit(t *testing.T) {
 	q := New(db, runner, maxConc, nil)
 	defer q.Stop()
 
-	// We can't easily test actual execution concurrency without mocking the runner,
-	// but we can verify the queue was created with the right concurrency
-	if q.maxConcurrency != int64(maxConc) {
-		t.Errorf("maxConcurrency: got %d, want %d", q.maxConcurrency, maxConc)
-	}
-
-	// Test that atomic tracking would work
-	for i := 0; i < 10; i++ {
-		val := atomic.AddInt64(&current, 1)
-		if val > atomic.LoadInt64(&maxConcurrent) {
-			atomic.StoreInt64(&maxConcurrent, val)
-		}
-		if val > int64(maxConc) {
-			// This tests our tracking logic, not the queue's semaphore
-			// Real semaphore testing would require mocking
-		}
-		atomic.AddInt64(&current, -1)
+	if q.workerCount != maxConc {
+		t.Errorf("workerCount: got %d, want %d", q.workerCount, maxConc)
 	}
 }
 
@@ -332,8 +303,6 @@ func TestEmitEvent(t *testing.T) {
 func TestEmitEventNilCallback(t *testing.T) {
 	q, _ := setupTestQueue(t, 10, nil, nil)
 	defer q.Stop()
-
-	// Should not panic with nil callback
 	q.emitEvent("test-id", models.TaskStatusRunning, "")
 }
 
@@ -347,14 +316,10 @@ func TestSubmitContextCancelled(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
+	cancel()
 
-	// Submit should succeed (it just marks as queued and spawns goroutine)
-	// but the goroutine should handle the cancelled context
 	err := q.Submit(ctx, task)
 	if err != nil {
-		// The db update might fail if context is already cancelled in some implementations
-		// but in SQLite it should be fine
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -474,17 +439,17 @@ func TestMetricsInitialState(t *testing.T) {
 	}
 }
 
-func TestMetricsRunningAndPending(t *testing.T) {
+func TestMetricsRunningAndQueued(t *testing.T) {
 	q, _ := setupTestQueue(t, 10, nil, nil)
 	defer q.Stop()
 
-	// Manually inject running and pending entries
 	q.mu.Lock()
 	q.running["r-1"] = func() {}
 	q.running["r-2"] = func() {}
-	q.pending["p-1"] = func() {}
-	q.pending["p-2"] = func() {}
-	q.pending["p-3"] = func() {}
+	now := time.Now()
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "p-1", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: now})
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "p-2", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: now})
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "p-3", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: now})
 	q.mu.Unlock()
 
 	m := q.Metrics()
@@ -494,7 +459,6 @@ func TestMetricsRunningAndPending(t *testing.T) {
 	if m.Queued != 3 {
 		t.Errorf("Queued: got %d, want 3", m.Queued)
 	}
-	// Pending = Queued + Running
 	if m.Pending != 5 {
 		t.Errorf("Pending: got %d, want 5 (Queued + Running)", m.Pending)
 	}
@@ -504,27 +468,23 @@ func TestMetricsPendingEqualsQueuedPlusRunning(t *testing.T) {
 	q, _ := setupTestQueue(t, 10, nil, nil)
 	defer q.Stop()
 
-	// Only running, no queued
 	q.mu.Lock()
 	q.running["r-1"] = func() {}
 	q.mu.Unlock()
 
 	m := q.Metrics()
 	if m.Pending != m.Queued+m.Running {
-		t.Errorf("Pending (%d) should equal Queued (%d) + Running (%d)",
-			m.Pending, m.Queued, m.Running)
+		t.Errorf("Pending (%d) should equal Queued (%d) + Running (%d)", m.Pending, m.Queued, m.Running)
 	}
 
-	// Only queued, no running
 	q.mu.Lock()
 	delete(q.running, "r-1")
-	q.pending["p-1"] = func() {}
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "p-1", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: time.Now()})
 	q.mu.Unlock()
 
 	m = q.Metrics()
 	if m.Pending != m.Queued+m.Running {
-		t.Errorf("Pending (%d) should equal Queued (%d) + Running (%d)",
-			m.Pending, m.Queued, m.Running)
+		t.Errorf("Pending (%d) should equal Queued (%d) + Running (%d)", m.Pending, m.Queued, m.Running)
 	}
 }
 
@@ -541,7 +501,6 @@ func TestMetricsTotalSubmittedIncrementsOnSubmit(t *testing.T) {
 		t.Fatalf("Submit: %v", err)
 	}
 
-	// Give goroutine time to start
 	time.Sleep(200 * time.Millisecond)
 
 	m := q.Metrics()
@@ -553,16 +512,14 @@ func TestMetricsTotalSubmittedIncrementsOnSubmit(t *testing.T) {
 func TestMetricsAfterStop(t *testing.T) {
 	q, _ := setupTestQueue(t, 10, nil, nil)
 
-	// Inject fake entries
 	q.mu.Lock()
 	q.running["r-1"] = func() {}
-	q.pending["p-1"] = func() {}
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "p-1", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: time.Now()})
 	q.mu.Unlock()
 
 	q.Stop()
 
 	m := q.Metrics()
-	// After Stop, running and pending should be cleared
 	if m.Running != 0 {
 		t.Errorf("Running after Stop: got %d, want 0", m.Running)
 	}
@@ -606,7 +563,7 @@ func TestSubmitDuplicatePending(t *testing.T) {
 	}
 
 	q.mu.Lock()
-	q.pending[task.ID] = func() {}
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: task.ID, Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: time.Now()})
 	q.mu.Unlock()
 
 	err := q.Submit(context.Background(), task)
@@ -625,8 +582,8 @@ func TestSubmitErrQueueFull(t *testing.T) {
 	q.maxPending = 2
 
 	q.mu.Lock()
-	q.pending["fill-1"] = func() {}
-	q.pending["fill-2"] = func() {}
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "fill-1", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: time.Now()})
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "fill-2", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: time.Now()})
 	q.mu.Unlock()
 
 	task := makeTestTask("overflow-1")
@@ -658,20 +615,25 @@ func TestCancelNonExistentTask(t *testing.T) {
 	}
 }
 
-func TestCancelPendingTask(t *testing.T) {
+func TestCancelPendingTaskInHeap(t *testing.T) {
 	var events []models.TaskEvent
 	var mu sync.Mutex
 	q, db := setupTestQueue(t, 10, &events, &mu)
 	defer q.Stop()
 
-	task := makeTestTask("cancel-pend-1")
+	task := makeTestTask("cancel-heap-1")
 	if err := db.CreateTask(context.Background(), task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
 	cancelCalled := false
 	q.mu.Lock()
-	q.pending[task.ID] = func() { cancelCalled = true }
+	heap.Push(&q.pq, &heapItem{
+		task:    task,
+		ctx:     context.Background(),
+		cancel:  func() { cancelCalled = true },
+		addedAt: time.Now(),
+	})
 	q.mu.Unlock()
 
 	if err := q.Cancel(task.ID); err != nil {
@@ -679,16 +641,16 @@ func TestCancelPendingTask(t *testing.T) {
 	}
 
 	if !cancelCalled {
-		t.Error("pending task cancel function should have been called")
+		t.Error("cancel function should have been called")
 	}
 
 	q.mu.Lock()
-	_, inPending := q.pending[task.ID]
+	inHeap := q.isTaskInHeap(task.ID)
 	wasCancelled := q.cancelled[task.ID]
 	q.mu.Unlock()
 
-	if inPending {
-		t.Error("task should be removed from pending map")
+	if inHeap {
+		t.Error("task should be removed from heap")
 	}
 	if !wasCancelled {
 		t.Error("task should be marked as cancelled")
@@ -806,7 +768,12 @@ func TestHandleFailureRetriesWithBackoff(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	go q.handleFailure(context.Background(), task, fmt.Errorf("temporary error"))
+	ri := q.handleFailure(context.Background(), task, fmt.Errorf("temporary error"))
+	if !ri.shouldRetry {
+		t.Fatal("expected shouldRetry to be true")
+	}
+
+	go q.scheduleRetry(ri)
 
 	time.Sleep(2 * time.Second)
 
@@ -909,141 +876,35 @@ func TestHandleFailureRetryStoppedByContextCancel(t *testing.T) {
 	}
 }
 
-func TestStopClearsPendingTasks(t *testing.T) {
+func TestStopClearsHeapTasks(t *testing.T) {
 	q, _ := setupTestQueue(t, 10, nil, nil)
 
-	pendingCancel1Done := make(chan struct{})
-	pendingCancel2Done := make(chan struct{})
+	cancel1Done := make(chan struct{})
+	cancel2Done := make(chan struct{})
 	q.mu.Lock()
-	q.pending["pend-1"] = func() { close(pendingCancel1Done) }
-	q.pending["pend-2"] = func() { close(pendingCancel2Done) }
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "pend-1", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() { close(cancel1Done) }, addedAt: time.Now()})
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "pend-2", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() { close(cancel2Done) }, addedAt: time.Now()})
 	q.mu.Unlock()
 
 	q.Stop()
 
 	select {
-	case <-pendingCancel1Done:
+	case <-cancel1Done:
 	case <-time.After(time.Second):
-		t.Error("cancel for pending pend-1 was not called")
+		t.Error("cancel for pend-1 was not called")
 	}
 	select {
-	case <-pendingCancel2Done:
+	case <-cancel2Done:
 	case <-time.After(time.Second):
-		t.Error("cancel for pending pend-2 was not called")
+		t.Error("cancel for pend-2 was not called")
 	}
 
 	q.mu.Lock()
-	pendingCount := len(q.pending)
+	heapLen := q.pq.Len()
 	q.mu.Unlock()
-	if pendingCount != 0 {
-		t.Errorf("pending count after Stop: got %d, want 0", pendingCount)
+	if heapLen != 0 {
+		t.Errorf("heap length after Stop: got %d, want 0", heapLen)
 	}
-}
-
-func TestExecuteTaskCancelledBeforeAcquire(t *testing.T) {
-	var events []models.TaskEvent
-	var mu sync.Mutex
-	q, db := setupTestQueue(t, 1, &events, &mu)
-	defer q.Stop()
-
-	task := makeTestTask("exec-cancel-1")
-	if err := db.CreateTask(context.Background(), task); err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-
-	q.mu.Lock()
-	q.cancelled[task.ID] = true
-	q.pending[task.ID] = func() {}
-	q.mu.Unlock()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	q.executeTask(ctx, task)
-
-	mu.Lock()
-	foundFailed := false
-	for _, e := range events {
-		if e.TaskID == task.ID && e.Status == models.TaskStatusFailed {
-			foundFailed = true
-		}
-	}
-	mu.Unlock()
-
-	if foundFailed {
-		t.Error("cancelled task should not emit failed event")
-	}
-}
-
-func TestCancelledMapCleanedAfterAcquireFailure(t *testing.T) {
-	q, db := setupTestQueue(t, 1, nil, nil)
-	defer q.Stop()
-
-	task := makeTestTask("cancel-leak-1")
-	if err := db.CreateTask(context.Background(), task); err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-
-	q.mu.Lock()
-	q.cancelled[task.ID] = true
-	q.pending[task.ID] = func() {}
-	q.mu.Unlock()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	q.executeTask(ctx, task)
-
-	q.mu.Lock()
-	_, leaked := q.cancelled[task.ID]
-	q.mu.Unlock()
-
-	if leaked {
-		t.Error("cancelled map entry should be cleaned up after sem.Acquire failure")
-	}
-}
-
-func TestCancelledMapCleanedAfterStoppedEarlyExit(t *testing.T) {
-	q, db := setupTestQueue(t, 10, nil, nil)
-
-	task := makeTestTask("cancel-leak-2")
-	if err := db.CreateTask(context.Background(), task); err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-
-	q.mu.Lock()
-	q.cancelled[task.ID] = true
-	q.pending[task.ID] = func() {}
-	q.mu.Unlock()
-
-	q.Stop()
-
-	q.executeTask(context.Background(), task)
-
-	q.mu.Lock()
-	_, leaked := q.cancelled[task.ID]
-	q.mu.Unlock()
-
-	if leaked {
-		t.Error("cancelled map entry should be cleaned up after stopped early exit")
-	}
-}
-
-func TestExecuteTaskStoppedBeforeRun(t *testing.T) {
-	q, db := setupTestQueue(t, 10, nil, nil)
-
-	task := makeTestTask("exec-stopped-1")
-	if err := db.CreateTask(context.Background(), task); err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-
-	q.mu.Lock()
-	q.pending[task.ID] = func() {}
-	q.mu.Unlock()
-
-	q.Stop()
-
-	q.executeTask(context.Background(), task)
 }
 
 func TestMetricsTotalCompletedAfterHandleSuccess(t *testing.T) {
@@ -1100,3 +961,275 @@ func TestSubmitBatchEmpty(t *testing.T) {
 		t.Fatalf("SubmitBatch(empty): %v", err)
 	}
 }
+
+func TestPriorityOrdering(t *testing.T) {
+	q, db := setupTestQueue(t, 10, nil, nil)
+	defer q.Stop()
+
+	low := makeTestTask("prio-low")
+	low.Priority = models.PriorityLow
+	normal := makeTestTask("prio-normal")
+	normal.Priority = models.PriorityNormal
+	high := makeTestTask("prio-high")
+	high.Priority = models.PriorityHigh
+
+	for _, task := range []models.Task{low, normal, high} {
+		if err := db.CreateTask(context.Background(), task); err != nil {
+			t.Fatalf("CreateTask %s: %v", task.ID, err)
+		}
+	}
+
+	q.mu.Lock()
+	now := time.Now()
+	heap.Push(&q.pq, &heapItem{task: low, ctx: context.Background(), cancel: func() {}, addedAt: now})
+	heap.Push(&q.pq, &heapItem{task: normal, ctx: context.Background(), cancel: func() {}, addedAt: now.Add(time.Millisecond)})
+	heap.Push(&q.pq, &heapItem{task: high, ctx: context.Background(), cancel: func() {}, addedAt: now.Add(2 * time.Millisecond)})
+
+	first := heap.Pop(&q.pq).(*heapItem)
+	second := heap.Pop(&q.pq).(*heapItem)
+	third := heap.Pop(&q.pq).(*heapItem)
+	q.mu.Unlock()
+
+	if first.task.ID != "prio-high" {
+		t.Errorf("first should be high priority, got %s", first.task.ID)
+	}
+	if second.task.ID != "prio-normal" {
+		t.Errorf("second should be normal priority, got %s", second.task.ID)
+	}
+	if third.task.ID != "prio-low" {
+		t.Errorf("third should be low priority, got %s", third.task.ID)
+	}
+}
+
+func TestPauseBatch(t *testing.T) {
+	q, _ := setupTestQueue(t, 10, nil, nil)
+	defer q.Stop()
+
+	now := time.Now()
+	q.mu.Lock()
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "b1-t1", BatchID: "batch-1", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: now})
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "b1-t2", BatchID: "batch-1", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: now})
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "b2-t1", BatchID: "batch-2", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: now})
+	q.mu.Unlock()
+
+	q.PauseBatch("batch-1")
+
+	q.mu.Lock()
+	mainLen := q.pq.Len()
+	pausedLen := q.pausedPQ.Len()
+	isPaused := q.paused["batch-1"]
+	q.mu.Unlock()
+
+	if mainLen != 1 {
+		t.Errorf("main heap after pause: got %d, want 1", mainLen)
+	}
+	if pausedLen != 2 {
+		t.Errorf("paused heap after pause: got %d, want 2", pausedLen)
+	}
+	if !isPaused {
+		t.Error("batch-1 should be marked as paused")
+	}
+}
+
+func TestResumeBatch(t *testing.T) {
+	q, _ := setupTestQueue(t, 10, nil, nil)
+	defer q.Stop()
+
+	now := time.Now()
+	q.mu.Lock()
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "b1-t1", BatchID: "batch-1", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: now})
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "b1-t2", BatchID: "batch-1", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: now})
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "b2-t1", BatchID: "batch-2", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: now})
+	q.mu.Unlock()
+
+	q.PauseBatch("batch-1")
+	q.ResumeBatch("batch-1")
+
+	q.mu.Lock()
+	mainLen := q.pq.Len()
+	pausedLen := q.pausedPQ.Len()
+	_, isPaused := q.paused["batch-1"]
+	q.mu.Unlock()
+
+	if mainLen != 3 {
+		t.Errorf("main heap after resume: got %d, want 3", mainLen)
+	}
+	if pausedLen != 0 {
+		t.Errorf("paused heap after resume: got %d, want 0", pausedLen)
+	}
+	if isPaused {
+		t.Error("batch-1 should not be paused after resume")
+	}
+}
+
+func TestPauseBatchDoesNotAffectOther(t *testing.T) {
+	q, _ := setupTestQueue(t, 10, nil, nil)
+	defer q.Stop()
+
+	now := time.Now()
+	q.mu.Lock()
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "b1-t1", BatchID: "batch-1", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: now})
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "b2-t1", BatchID: "batch-2", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: now})
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "b2-t2", BatchID: "batch-2", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: now})
+	q.mu.Unlock()
+
+	q.PauseBatch("batch-1")
+
+	q.mu.Lock()
+	mainLen := q.pq.Len()
+	pausedLen := q.pausedPQ.Len()
+	q.mu.Unlock()
+
+	if mainLen != 2 {
+		t.Errorf("main heap: got %d, want 2 (batch-2 tasks)", mainLen)
+	}
+	if pausedLen != 1 {
+		t.Errorf("paused heap: got %d, want 1 (batch-1 task)", pausedLen)
+	}
+}
+
+func TestRecoverStaleTasks(t *testing.T) {
+	q, db := setupTestQueue(t, 10, nil, nil)
+	defer q.Stop()
+
+	task1 := makeTestTask("stale-running")
+	task1.Status = models.TaskStatusPending
+	if err := db.CreateTask(context.Background(), task1); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := db.UpdateTaskStatus(context.Background(), task1.ID, models.TaskStatusRunning, ""); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+
+	task2 := makeTestTask("stale-queued")
+	task2.Status = models.TaskStatusPending
+	if err := db.CreateTask(context.Background(), task2); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := db.UpdateTaskStatus(context.Background(), task2.ID, models.TaskStatusQueued, ""); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+
+	task3 := makeTestTask("not-stale")
+	task3.Status = models.TaskStatusPending
+	if err := db.CreateTask(context.Background(), task3); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := db.UpdateTaskStatus(context.Background(), task3.ID, models.TaskStatusCompleted, ""); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+
+	if err := q.RecoverStaleTasks(context.Background()); err != nil {
+		t.Fatalf("RecoverStaleTasks: %v", err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	got3, err := db.GetTask(context.Background(), "not-stale")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got3.Status != models.TaskStatusCompleted {
+		t.Errorf("non-stale task status changed: got %q", got3.Status)
+	}
+}
+
+func TestStopClearsPausedHeap(t *testing.T) {
+	q, _ := setupTestQueue(t, 10, nil, nil)
+
+	cancelDone := make(chan struct{})
+	q.mu.Lock()
+	heap.Push(&q.pausedPQ, &heapItem{
+		task:    models.Task{ID: "paused-1", BatchID: "b1", Priority: models.PriorityNormal},
+		ctx:     context.Background(),
+		cancel:  func() { close(cancelDone) },
+		addedAt: time.Now(),
+	})
+	q.mu.Unlock()
+
+	q.Stop()
+
+	select {
+	case <-cancelDone:
+	case <-time.After(time.Second):
+		t.Error("cancel for paused item was not called")
+	}
+
+	q.mu.Lock()
+	pausedLen := q.pausedPQ.Len()
+	q.mu.Unlock()
+	if pausedLen != 0 {
+		t.Errorf("paused heap after Stop: got %d, want 0", pausedLen)
+	}
+}
+
+func TestCancelTaskInPausedHeap(t *testing.T) {
+	q, db := setupTestQueue(t, 10, nil, nil)
+	defer q.Stop()
+
+	task := makeTestTask("cancel-paused-1")
+	if err := db.CreateTask(context.Background(), task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	cancelCalled := false
+	q.mu.Lock()
+	heap.Push(&q.pausedPQ, &heapItem{
+		task:    task,
+		ctx:     context.Background(),
+		cancel:  func() { cancelCalled = true },
+		addedAt: time.Now(),
+	})
+	q.mu.Unlock()
+
+	if err := q.Cancel(task.ID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	if !cancelCalled {
+		t.Error("cancel for paused item should be called")
+	}
+
+	q.mu.Lock()
+	pausedLen := q.pausedPQ.Len()
+	q.mu.Unlock()
+
+	if pausedLen != 0 {
+		t.Errorf("paused heap after cancel: got %d, want 0", pausedLen)
+	}
+}
+
+func TestQueueFullCountsBothHeaps(t *testing.T) {
+	q, _ := setupTestQueue(t, 1, nil, nil)
+	defer q.Stop()
+
+	q.maxPending = 3
+
+	q.mu.Lock()
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "m-1", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: time.Now()})
+	heap.Push(&q.pausedPQ, &heapItem{task: models.Task{ID: "p-1", BatchID: "b1", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: time.Now()})
+	heap.Push(&q.pausedPQ, &heapItem{task: models.Task{ID: "p-2", BatchID: "b1", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: time.Now()})
+	q.mu.Unlock()
+
+	task := makeTestTask("overflow-both")
+	err := q.Submit(context.Background(), task)
+	if !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("expected ErrQueueFull when both heaps count toward limit, got %v", err)
+	}
+}
+
+func TestMetricsIncludesPausedInQueued(t *testing.T) {
+	q, _ := setupTestQueue(t, 10, nil, nil)
+	defer q.Stop()
+
+	q.mu.Lock()
+	heap.Push(&q.pq, &heapItem{task: models.Task{ID: "m-1", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: time.Now()})
+	heap.Push(&q.pausedPQ, &heapItem{task: models.Task{ID: "p-1", BatchID: "b1", Priority: models.PriorityNormal}, ctx: context.Background(), cancel: func() {}, addedAt: time.Now()})
+	q.mu.Unlock()
+
+	m := q.Metrics()
+	if m.Queued != 2 {
+		t.Errorf("Queued should include paused: got %d, want 2", m.Queued)
+	}
+}
+

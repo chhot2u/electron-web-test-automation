@@ -12,7 +12,10 @@
   import BatchFromFlow from './components/BatchFromFlow.svelte';
   import LogViewer from './components/LogViewer.svelte';
   import BatchProgressPanel from './components/BatchProgressPanel.svelte';
-  import { tasks, activeTab, updateTaskInStore, replaceTaskInStore, selectedTask, statusFilter, tagFilter, isRecording, recordedFlows } from './lib/store';
+  import SchedulePanel from './components/SchedulePanel.svelte';
+  import CaptchaSettings from './components/CaptchaSettings.svelte';
+  import VisualDiffViewer from './components/VisualDiffViewer.svelte';
+  import { tasks, activeTab, updateTaskInStore, replaceTaskInStore, selectedTask, statusFilter, tagFilter, isRecording, recordedFlows} from './lib/store';
   import type { Task, RecordedFlow } from './lib/types';
   import { ListTasksPaginated, GetTask, IsRecording, ListRecordedFlows } from '../wailsjs/go/main/App';
   import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime';
@@ -116,6 +119,27 @@
     >
       Recorder
     </button>
+    <button
+      class="tab"
+      class:active={$activeTab === 'schedules'}
+      on:click={() => $activeTab = 'schedules'}
+    >
+      Schedules
+    </button>
+    <button
+      class="tab"
+      class:active={$activeTab === 'visual'}
+      on:click={() => $activeTab = 'visual'}
+    >
+      Visual
+    </button>
+    <button
+      class="tab"
+      class:active={$activeTab === 'settings'}
+      on:click={() => $activeTab = 'settings'}
+    >
+      Settings
+    </button>
   </nav>
 
   {#if loading}
@@ -165,6 +189,12 @@
         <FlowManager on:use={(e) => { selectedFlow = e.detail; showBatchFromFlow = true; }} />
       </div>
     </div>
+  {:else if $activeTab === 'schedules'}
+    <SchedulePanel />
+  {:else if $activeTab === 'visual'}
+    <VisualDiffViewer />
+  {:else if $activeTab === 'settings'}
+    <CaptchaSettings />
   {/if}
 </div>
 

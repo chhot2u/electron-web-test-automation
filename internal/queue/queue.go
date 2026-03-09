@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"container/heap"
 	"context"
 	"errors"
 	"fmt"
@@ -12,8 +13,6 @@ import (
 	"flowpilot/internal/database"
 	"flowpilot/internal/models"
 	"flowpilot/internal/proxy"
-
-	"golang.org/x/sync/semaphore"
 )
 
 // EventCallback is invoked when a task's status changes.
@@ -22,41 +21,69 @@ type EventCallback func(event models.TaskEvent)
 // ErrQueueFull is returned when the pending queue has reached its maximum size.
 var ErrQueueFull = errors.New("queue is full: too many pending tasks")
 
-// Queue manages task scheduling, concurrency limiting, and execution.
-type Queue struct {
-	db             *database.DB
-	runner         *browser.Runner
-	proxyManager   *proxy.Manager
-	sem            *semaphore.Weighted
-	maxConcurrency int64
-	maxPending     int
-	onEvent        EventCallback
-	metrics        models.QueueMetrics
+// ErrBatchPaused is returned when attempting to submit to a paused batch.
+var ErrBatchPaused = errors.New("batch is paused")
 
-	mu        sync.Mutex
-	running   map[string]context.CancelFunc
-	pending   map[string]context.CancelFunc
-	cancelled map[string]bool
-	stopped   bool
-	stopOnce  sync.Once
-	stopCh    chan struct{}
+// Queue manages task scheduling, concurrency limiting, and execution using
+// a fixed worker pool with a priority heap. Higher-priority tasks are
+// dequeued first; within the same priority level, tasks are processed FIFO.
+type Queue struct {
+	db           *database.DB
+	runner       *browser.Runner
+	proxyManager *proxy.Manager
+	workerCount  int
+	maxPending   int
+	onEvent      EventCallback
+	metrics      models.QueueMetrics
+
+	mu         sync.Mutex
+	cond       *sync.Cond
+	pq         taskHeap        // main priority queue
+	pausedPQ   taskHeap        // tasks from paused batches
+	running    map[string]context.CancelFunc
+	cancelled  map[string]bool
+	paused     map[string]bool // batchID → paused
+	stopped    bool
+	stopOnce   sync.Once
+	stopCh     chan struct{}
+	workerWg   sync.WaitGroup
 }
 
 // New creates a Queue with the given concurrency limit and event callback.
+// It spawns workerCount fixed workers with a staggered 100ms warm-up delay.
 func New(db *database.DB, runner *browser.Runner, maxConcurrency int, onEvent EventCallback) *Queue {
-	return &Queue{
-		db:             db,
-		runner:         runner,
-		sem:            semaphore.NewWeighted(int64(maxConcurrency)),
-		maxConcurrency: int64(maxConcurrency),
-		maxPending:     maxConcurrency * 10, // default: 10x concurrency limit
-		onEvent:        onEvent,
-		metrics:        models.QueueMetrics{},
-		running:        make(map[string]context.CancelFunc),
-		pending:        make(map[string]context.CancelFunc),
-		cancelled:      make(map[string]bool),
-		stopCh:         make(chan struct{}),
+	q := &Queue{
+		db:          db,
+		runner:      runner,
+		workerCount: maxConcurrency,
+		maxPending:  maxConcurrency * 10, // default: 10x concurrency limit
+		onEvent:     onEvent,
+		metrics:     models.QueueMetrics{},
+		pq:          make(taskHeap, 0),
+		pausedPQ:    make(taskHeap, 0),
+		running:     make(map[string]context.CancelFunc),
+		cancelled:   make(map[string]bool),
+		paused:      make(map[string]bool),
+		stopCh:      make(chan struct{}),
 	}
+	q.cond = sync.NewCond(&q.mu)
+	heap.Init(&q.pq)
+	heap.Init(&q.pausedPQ)
+
+	// Start fixed worker pool with staggered warm-up.
+	for i := 0; i < maxConcurrency; i++ {
+		q.workerWg.Add(1)
+		workerID := i
+		go func() {
+			if workerID > 0 {
+				// Stagger startup by 100ms per worker to avoid Chrome launch storm.
+				time.Sleep(time.Duration(workerID) * 100 * time.Millisecond)
+			}
+			q.worker(workerID)
+		}()
+	}
+
+	return q
 }
 
 // SetProxyManager attaches a proxy manager for automatic proxy selection.
@@ -79,34 +106,41 @@ func (q *Queue) Submit(ctx context.Context, task models.Task) error {
 		q.mu.Unlock()
 		return fmt.Errorf("queue is stopped")
 	}
-	if _, ok := q.running[task.ID]; ok {
+	if q.isTaskEnqueued(task.ID) {
 		q.mu.Unlock()
 		return fmt.Errorf("task %s is already running", task.ID)
 	}
-	if _, ok := q.pending[task.ID]; ok {
+	if q.isTaskInHeap(task.ID) {
 		q.mu.Unlock()
 		return fmt.Errorf("task %s is already pending", task.ID)
 	}
-	if q.maxPending > 0 && len(q.pending) >= q.maxPending {
+	if q.maxPending > 0 && q.pq.Len()+q.pausedPQ.Len() >= q.maxPending {
 		q.mu.Unlock()
 		return ErrQueueFull
 	}
 
 	taskCtx, cancel := context.WithCancel(ctx)
-	q.pending[task.ID] = cancel
+	item := &heapItem{
+		task:    task,
+		ctx:     taskCtx,
+		cancel:  cancel,
+		addedAt: time.Now(),
+	}
+	heap.Push(&q.pq, item)
 	q.metrics.TotalSubmitted++
 	q.mu.Unlock()
 
 	if err := q.db.UpdateTaskStatus(context.Background(), task.ID, models.TaskStatusQueued, ""); err != nil {
 		q.mu.Lock()
-		delete(q.pending, task.ID)
+		q.removeFromHeap(task.ID)
 		q.mu.Unlock()
 		cancel()
 		return fmt.Errorf("update task status to queued: %w", err)
 	}
 	q.emitEvent(task.ID, models.TaskStatusQueued, "")
 
-	go q.executeTask(taskCtx, task)
+	// Signal one worker that a task is available.
+	q.cond.Signal()
 	return nil
 }
 
@@ -129,10 +163,11 @@ func (q *Queue) Cancel(taskID string) error {
 		cancel()
 		delete(q.running, taskID)
 		q.mu.Unlock()
-	} else if cancel, ok := q.pending[taskID]; ok {
+	} else if q.removeFromHeap(taskID) {
 		q.cancelled[taskID] = true
-		cancel()
-		delete(q.pending, taskID)
+		q.mu.Unlock()
+	} else if q.removeFromPausedHeap(taskID) {
+		q.cancelled[taskID] = true
 		q.mu.Unlock()
 	} else {
 		q.mu.Unlock()
@@ -145,21 +180,86 @@ func (q *Queue) Cancel(taskID string) error {
 	return nil
 }
 
+// PauseBatch pauses all pending tasks for the given batch. Running tasks
+// continue to completion but new tasks from this batch won't be picked up.
+func (q *Queue) PauseBatch(batchID string) {
+	q.mu.Lock()
+	q.paused[batchID] = true
+	// Move items from main heap to paused heap for this batch.
+	var remaining []*heapItem
+	for q.pq.Len() > 0 {
+		item := heap.Pop(&q.pq).(*heapItem)
+		if item.task.BatchID == batchID {
+			heap.Push(&q.pausedPQ, item)
+		} else {
+			remaining = append(remaining, item)
+		}
+	}
+	for _, item := range remaining {
+		heap.Push(&q.pq, item)
+	}
+	q.mu.Unlock()
+}
+
+// ResumeBatch resumes a paused batch. Paused tasks are moved back into the
+// main priority queue and workers are signaled.
+func (q *Queue) ResumeBatch(batchID string) {
+	q.mu.Lock()
+	delete(q.paused, batchID)
+	// Move items back from paused heap to main heap.
+	var remaining []*heapItem
+	movedCount := 0
+	for q.pausedPQ.Len() > 0 {
+		item := heap.Pop(&q.pausedPQ).(*heapItem)
+		if item.task.BatchID == batchID {
+			heap.Push(&q.pq, item)
+			movedCount++
+		} else {
+			remaining = append(remaining, item)
+		}
+	}
+	for _, item := range remaining {
+		heap.Push(&q.pausedPQ, item)
+	}
+	q.mu.Unlock()
+
+	// Wake workers for the resumed tasks.
+	if movedCount > 0 {
+		q.cond.Broadcast()
+	}
+}
+
 // Stop cancels all running and pending tasks and prevents new submissions.
 func (q *Queue) Stop() {
 	q.stopOnce.Do(func() {
 		q.mu.Lock()
 		q.stopped = true
+
+		// Cancel all running tasks.
 		for id, cancel := range q.running {
 			cancel()
 			delete(q.running, id)
 		}
-		for id, cancel := range q.pending {
-			cancel()
-			delete(q.pending, id)
+
+		// Cancel all tasks in the main heap.
+		for q.pq.Len() > 0 {
+			item := heap.Pop(&q.pq).(*heapItem)
+			item.cancel()
+		}
+
+		// Cancel all tasks in the paused heap.
+		for q.pausedPQ.Len() > 0 {
+			item := heap.Pop(&q.pausedPQ).(*heapItem)
+			item.cancel()
 		}
 		q.mu.Unlock()
+
+		// Wake all workers so they can exit.
+		q.cond.Broadcast()
 		close(q.stopCh)
+
+		// Wait for all workers to finish.
+		q.workerWg.Wait()
 	})
 }
 
@@ -171,7 +271,7 @@ func (q *Queue) RunningCount() int {
 }
 
 // Metrics returns a snapshot of queue metrics.
-// Queued = tasks waiting for a concurrency slot.
+// Queued = tasks waiting in the priority heap (main + paused).
 // Running = tasks currently executing.
 // Pending = Queued + Running (total in-flight).
 func (q *Queue) Metrics() models.QueueMetrics {
@@ -179,9 +279,68 @@ func (q *Queue) Metrics() models.QueueMetrics {
 	defer q.mu.Unlock()
 	metrics := q.metrics
 	metrics.Running = len(q.running)
-	metrics.Queued = len(q.pending)
-	metrics.Pending = len(q.pending) + len(q.running)
+	metrics.Queued = q.pq.Len() + q.pausedPQ.Len()
+	metrics.Pending = metrics.Queued + metrics.Running
 	return metrics
+}
+
+// RecoverStaleTasks finds tasks stuck in "running" or "queued" status
+// (from a previous crash), resets them to "pending", and re-submits them.
+func (q *Queue) RecoverStaleTasks(ctx context.Context) error {
+	stale, err := q.db.ListStaleTasks(ctx)
+	if err != nil {
+		return fmt.Errorf("list stale tasks: %w", err)
+	}
+	for _, task := range stale {
+		if err := q.db.UpdateTaskStatus(ctx, task.ID, models.TaskStatusPending, "recovered after restart"); err != nil {
+			return fmt.Errorf("reset stale task %s: %w", task.ID, err)
+		}
+		task.Status = models.TaskStatusPending
+		if err := q.Submit(ctx, task); err != nil {
+			return fmt.Errorf("re-submit stale task %s: %w", task.ID, err)
+		}
+	}
+	return nil
+}
+
+// worker is the main loop for a fixed pool worker. It blocks on the
+// condition variable until a task is available, then executes it.
+func (q *Queue) worker(_ int) {
+	defer q.workerWg.Done()
+
+	for {
+		q.mu.Lock()
+		// Wait until there's work or the queue is stopped.
+		for q.pq.Len() == 0 && !q.stopped {
+			q.cond.Wait()
+		}
+		if q.stopped {
+			q.mu.Unlock()
+			return
+		}
+
+		item := heap.Pop(&q.pq).(*heapItem)
+
+		// Skip cancelled tasks.
+		if q.cancelled[item.task.ID] {
+			delete(q.cancelled, item.task.ID)
+			item.cancel()
+			q.mu.Unlock()
+			continue
+		}
+
+		// Move paused-batch items to the paused heap.
+		if item.task.BatchID != "" && q.paused[item.task.BatchID] {
+			heap.Push(&q.pausedPQ, item)
+			q.mu.Unlock()
+			continue
+		}
+
+		q.running[item.task.ID] = item.cancel
+		q.mu.Unlock()
+
+		q.executeTask(item.ctx, item.task)
+	}
 }
 
 type retryInfo struct {
@@ -192,45 +351,37 @@ type retryInfo struct {
 }
 
 func (q *Queue) executeTask(ctx context.Context, task models.Task) {
-	if err := q.sem.Acquire(ctx, 1); err != nil {
+	defer func() {
 		q.mu.Lock()
-		delete(q.pending, task.ID)
-		wasCancelled := q.cancelled[task.ID]
+		delete(q.running, task.ID)
 		delete(q.cancelled, task.ID)
-		q.metrics.TotalFailed++
 		q.mu.Unlock()
-		if !wasCancelled {
-			_ = q.db.UpdateTaskStatus(context.Background(), task.ID, models.TaskStatusFailed, "failed to acquire queue slot")
-			q.emitEvent(task.ID, models.TaskStatusFailed, "failed to acquire queue slot")
-		}
-		return
-	}
-	defer q.sem.Release(1)
+	}()
 
 	q.mu.Lock()
-	delete(q.pending, task.ID)
 	if q.stopped || q.cancelled[task.ID] {
 		delete(q.cancelled, task.ID)
 		q.mu.Unlock()
 		return
 	}
+	q.mu.Unlock()
 
 	taskTimeout := 5 * time.Minute
 	if task.Timeout > 0 {
 		taskTimeout = time.Duration(task.Timeout) * time.Second
 	}
 	taskCtx, cancel := context.WithTimeout(ctx, taskTimeout)
+	defer cancel()
 
-	q.running[task.ID] = cancel
-	q.mu.Unlock()
-
-	defer func() {
-		cancel()
-		q.mu.Lock()
-		delete(q.running, task.ID)
+	// Update the cancel func so Cancel() uses the timeout-aware one.
+	q.mu.Lock()
+	if q.stopped || q.cancelled[task.ID] {
 		delete(q.cancelled, task.ID)
 		q.mu.Unlock()
-	}()
+		return
+	}
+	q.running[task.ID] = cancel
+	q.mu.Unlock()
 
 	var selectedProxyID string
 	pm := q.getProxyManager()
@@ -338,20 +489,13 @@ func (q *Queue) scheduleRetry(ri retryInfo) {
 		return
 	}
 
-	q.mu.Lock()
-	if q.stopped {
-		q.mu.Unlock()
-		if err := q.db.UpdateTaskStatus(context.Background(), ri.task.ID, models.TaskStatusCancelled, "cancelled during retry (queue stopped)"); err != nil {
-			q.emitEvent(ri.task.ID, models.TaskStatusFailed, fmt.Sprintf("update status: %v", err))
+	// Re-submit via the heap instead of spawning another goroutine.
+	if err := q.Submit(ri.parentCtx, ri.task); err != nil {
+		if err2 := q.db.UpdateTaskStatus(context.Background(), ri.task.ID, models.TaskStatusFailed, fmt.Sprintf("retry re-submit: %v", err)); err2 != nil {
+			q.emitEvent(ri.task.ID, models.TaskStatusFailed, fmt.Sprintf("update status: %v", err2))
 		}
-		return
+		q.emitEvent(ri.task.ID, models.TaskStatusFailed, fmt.Sprintf("retry re-submit: %v", err))
 	}
-
-	retryCtx, retryCancel := context.WithCancel(ri.parentCtx)
-	q.pending[ri.task.ID] = retryCancel
-	q.mu.Unlock()
-
-	q.executeTask(retryCtx, ri.task)
 }
 
 func (q *Queue) handleSuccess(task models.Task, result *models.TaskResult) {
@@ -377,4 +521,51 @@ func (q *Queue) emitEvent(taskID string, status models.TaskStatus, errMsg string
 			Error:  errMsg,
 		})
 	}
+}
+
+// isTaskEnqueued checks if a task is currently running. Must be called with mu held.
+func (q *Queue) isTaskEnqueued(taskID string) bool {
+	_, ok := q.running[taskID]
+	return ok
+}
+
+// isTaskInHeap checks if a task is in the main or paused heap. Must be called with mu held.
+func (q *Queue) isTaskInHeap(taskID string) bool {
+	for _, item := range q.pq {
+		if item.task.ID == taskID {
+			return true
+		}
+	}
+	for _, item := range q.pausedPQ {
+		if item.task.ID == taskID {
+			return true
+		}
+	}
+	return false
+}
+
+// removeFromHeap removes a task from the main heap. Returns true if found.
+// Must be called with mu held.
+func (q *Queue) removeFromHeap(taskID string) bool {
+	for i, item := range q.pq {
+		if item.task.ID == taskID {
+			item.cancel()
+			heap.Remove(&q.pq, i)
+			return true
+		}
+	}
+	return false
+}
+
+// removeFromPausedHeap removes a task from the paused heap. Returns true if found.
+// Must be called with mu held.
+func (q *Queue) removeFromPausedHeap(taskID string) bool {
+	for i, item := range q.pausedPQ {
+		if item.task.ID == taskID {
+			item.cancel()
+			heap.Remove(&q.pausedPQ, i)
+			return true
+		}
+	}
+	return false
 }

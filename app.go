@@ -10,6 +10,7 @@ import (
 
 	"flowpilot/internal/batch"
 	"flowpilot/internal/browser"
+	"flowpilot/internal/captcha"
 	"flowpilot/internal/crypto"
 	"flowpilot/internal/database"
 	"flowpilot/internal/logs"
@@ -17,6 +18,7 @@ import (
 	"flowpilot/internal/proxy"
 	"flowpilot/internal/queue"
 	"flowpilot/internal/recorder"
+	"flowpilot/internal/scheduler"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -43,6 +45,7 @@ type App struct {
 	runner       *browser.Runner
 	queue        *queue.Queue
 	proxyManager *proxy.Manager
+	scheduler    *scheduler.Scheduler
 	dataDir      string
 	batchEngine  *batch.Engine
 	logExporter  *logs.Exporter
@@ -106,6 +109,14 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.runner = runner
 
+	captchaConfig, err := a.db.GetActiveCaptchaConfig(a.ctx)
+	if err == nil && captchaConfig != nil {
+		solver, solverErr := captcha.NewSolver(*captchaConfig)
+		if solverErr == nil {
+			a.runner.SetCaptchaSolver(solver)
+		}
+	}
+
 	a.proxyManager = proxy.NewManager(db, models.ProxyPoolConfig{
 		Strategy:            models.RotationRoundRobin,
 		HealthCheckInterval: a.config.HealthCheckInterval,
@@ -118,6 +129,11 @@ func (a *App) startup(ctx context.Context) {
 	})
 	a.queue.SetProxyManager(a.proxyManager)
 
+	// Recover tasks stuck in running/queued from a previous crash.
+	if err := a.queue.RecoverStaleTasks(ctx); err != nil {
+		wailsRuntime.LogWarningf(ctx, "recover stale tasks: %v", err)
+	}
+
 	a.batchEngine = batch.New(db)
 
 	logsDir := filepath.Join(a.dataDir, "logs")
@@ -128,6 +144,9 @@ func (a *App) startup(ctx context.Context) {
 		return
 	}
 	a.logExporter = logExporter
+
+	a.scheduler = scheduler.New(a.db, a, 30*time.Second)
+	a.scheduler.Start(ctx)
 
 	go a.runRetentionCleanup(ctx)
 
@@ -165,6 +184,9 @@ func (a *App) purgeOnce() {
 }
 
 func (a *App) cleanup() {
+	if a.scheduler != nil {
+		a.scheduler.Stop()
+	}
 	if a.queue != nil {
 		a.queue.Stop()
 	}

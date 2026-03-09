@@ -5,6 +5,10 @@ export interface TaskStep {
   selector?: string;
   value?: string;
   timeout?: number;
+  condition?: string;
+  label?: string;
+  jumpTo?: string;
+  varName?: string;
 }
 
 export interface SelectorCandidate {
@@ -206,4 +210,63 @@ export interface StepLog {
   errorMsg?: string;
   durationMs: number;
   startedAt: string;
+}
+
+export interface Schedule {
+  id: string;
+  name: string;
+  cronExpr: string;
+  flowId: string;
+  url: string;
+  proxy: ProxyConfig;
+  priority: number;
+  headless: boolean;
+  tags?: string[];
+  enabled: boolean;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CaptchaConfig {
+  id: string;
+  provider: string;
+  apiKey: string;
+  enabled: boolean;
+  balance?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface VisualBaseline {
+  id: string;
+  name: string;
+  taskId?: string;
+  url: string;
+  screenshotPath: string;
+  width: number;
+  height: number;
+  createdAt: string;
+}
+
+export interface VisualDiff {
+  id: string;
+  baselineId: string;
+  taskId: string;
+  screenshotPath: string;
+  diffImagePath: string;
+  diffPercent: number;
+  pixelCount: number;
+  threshold: number;
+  passed: boolean;
+  width: number;
+  height: number;
+  createdAt: string;
+}
+
+export interface DiffRequest {
+  baselineId: string;
+  taskId: string;
+  threshold: number;
 }

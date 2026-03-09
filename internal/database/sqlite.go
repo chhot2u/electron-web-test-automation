@@ -166,6 +166,27 @@ func (db *DB) migrate() error {
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS schedules (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		cron_expr TEXT NOT NULL,
+		flow_id TEXT NOT NULL,
+		url TEXT NOT NULL,
+		proxy_server TEXT DEFAULT '',
+		proxy_username TEXT DEFAULT '',
+		proxy_password TEXT DEFAULT '',
+		proxy_geo TEXT DEFAULT '',
+		proxy_protocol TEXT DEFAULT '',
+		priority INTEGER DEFAULT 5,
+		headless INTEGER DEFAULT 1,
+		tags TEXT DEFAULT '[]',
+		enabled INTEGER DEFAULT 1,
+		last_run_at DATETIME,
+		next_run_at DATETIME,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 	CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority DESC);
 	CREATE INDEX IF NOT EXISTS idx_tasks_batch_id ON tasks(batch_id);
@@ -177,6 +198,47 @@ func (db *DB) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_websocket_logs_flow_id ON websocket_logs(flow_id);
 	CREATE INDEX IF NOT EXISTS idx_proxies_status ON proxies(status);
 	CREATE INDEX IF NOT EXISTS idx_proxies_geo ON proxies(geo);
+	CREATE TABLE IF NOT EXISTS captcha_config (
+		id TEXT PRIMARY KEY,
+		provider TEXT NOT NULL,
+		api_key TEXT NOT NULL,
+		enabled INTEGER DEFAULT 0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
+	CREATE INDEX IF NOT EXISTS idx_schedules_next_run ON schedules(next_run_at);
+
+	CREATE TABLE IF NOT EXISTS visual_baselines (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		task_id TEXT DEFAULT '',
+		url TEXT NOT NULL,
+		screenshot_path TEXT NOT NULL,
+		width INTEGER DEFAULT 0,
+		height INTEGER DEFAULT 0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS visual_diffs (
+		id TEXT PRIMARY KEY,
+		baseline_id TEXT NOT NULL,
+		task_id TEXT NOT NULL,
+		screenshot_path TEXT NOT NULL,
+		diff_image_path TEXT NOT NULL,
+		diff_percent REAL DEFAULT 0.0,
+		pixel_count INTEGER DEFAULT 0,
+		threshold REAL DEFAULT 5.0,
+		passed INTEGER DEFAULT 0,
+		width INTEGER DEFAULT 0,
+		height INTEGER DEFAULT 0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_visual_baselines_url ON visual_baselines(url);
+	CREATE INDEX IF NOT EXISTS idx_visual_diffs_baseline ON visual_diffs(baseline_id);
+	CREATE INDEX IF NOT EXISTS idx_visual_diffs_task ON visual_diffs(task_id);
 	`
 	_, err := db.conn.Exec(schema)
 	if err != nil {

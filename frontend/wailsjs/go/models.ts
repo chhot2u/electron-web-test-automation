@@ -117,6 +117,10 @@ export namespace models {
 	    selector?: string;
 	    value?: string;
 	    timeout?: number;
+	    condition?: string;
+	    label?: string;
+	    jumpTo?: string;
+	    varName?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new TaskStep(source);
@@ -128,6 +132,10 @@ export namespace models {
 	        this.selector = source["selector"];
 	        this.value = source["value"];
 	        this.timeout = source["timeout"];
+	        this.condition = source["condition"];
+	        this.label = source["label"];
+	        this.jumpTo = source["jumpTo"];
+	        this.varName = source["varName"];
 	    }
 	}
 	export class BatchTaskInput {
@@ -677,6 +685,159 @@ export namespace models {
 	}
 	
 	
+	export class Schedule {
+	    id: string;
+	    name: string;
+	    cronExpr: string;
+	    flowId: string;
+	    url: string;
+	    proxy: ProxyConfig;
+	    priority: number;
+	    headless: boolean;
+	    tags?: string[];
+	    enabled: boolean;
+	    lastRunAt?: any;
+	    nextRunAt?: any;
+	    createdAt: any;
+	    updatedAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new Schedule(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.cronExpr = source["cronExpr"];
+	        this.flowId = source["flowId"];
+	        this.url = source["url"];
+	        this.proxy = this.convertValues(source["proxy"], ProxyConfig);
+	        this.priority = source["priority"];
+	        this.headless = source["headless"];
+	        this.tags = source["tags"];
+	        this.enabled = source["enabled"];
+	        this.lastRunAt = source["lastRunAt"];
+	        this.nextRunAt = source["nextRunAt"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) { return a; }
+		    if (a.slice && a.map) { return (a as any[]).map(elem => this.convertValues(elem, classs)); }
+		    else if ("object" === typeof a) {
+		        if (asMap) { for (const key of Object.keys(a)) { a[key] = new classs(a[key]); } return a; }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+	export class CaptchaConfig {
+	    id: string;
+	    provider: string;
+	    apiKey: string;
+	    enabled: boolean;
+	    balance?: number;
+	    createdAt: any;
+	    updatedAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new CaptchaConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.provider = source["provider"];
+	        this.apiKey = source["apiKey"];
+	        this.enabled = source["enabled"];
+	        this.balance = source["balance"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	    }
+	}
+
+	export class VisualBaseline {
+	    id: string;
+	    name: string;
+	    taskId?: string;
+	    url: string;
+	    screenshotPath: string;
+	    width: number;
+	    height: number;
+	    createdAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new VisualBaseline(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.taskId = source["taskId"];
+	        this.url = source["url"];
+	        this.screenshotPath = source["screenshotPath"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.createdAt = source["createdAt"];
+	    }
+	}
+
+	export class VisualDiff {
+	    id: string;
+	    baselineId: string;
+	    taskId: string;
+	    screenshotPath: string;
+	    diffImagePath: string;
+	    diffPercent: number;
+	    pixelCount: number;
+	    threshold: number;
+	    passed: boolean;
+	    width: number;
+	    height: number;
+	    createdAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new VisualDiff(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.baselineId = source["baselineId"];
+	        this.taskId = source["taskId"];
+	        this.screenshotPath = source["screenshotPath"];
+	        this.diffImagePath = source["diffImagePath"];
+	        this.diffPercent = source["diffPercent"];
+	        this.pixelCount = source["pixelCount"];
+	        this.threshold = source["threshold"];
+	        this.passed = source["passed"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.createdAt = source["createdAt"];
+	    }
+	}
+
+	export class DiffRequest {
+	    baselineId: string;
+	    taskId: string;
+	    threshold: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiffRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.baselineId = source["baselineId"];
+	        this.taskId = source["taskId"];
+	        this.threshold = source["threshold"];
+	    }
+	}
+
 	export class WebSocketLog {
 	    flowId: string;
 	    stepIndex: number;

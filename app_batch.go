@@ -79,3 +79,25 @@ func (a *App) RetryFailedBatch(batchID string) ([]models.Task, error) {
 	}
 	return failed, nil
 }
+
+func (a *App) PauseBatch(batchID string) error {
+	if err := a.ready(); err != nil {
+		return err
+	}
+	if batchID == "" {
+		return fmt.Errorf("pause batch: batchID is required")
+	}
+	a.queue.PauseBatch(batchID)
+	return nil
+}
+
+func (a *App) ResumeBatch(batchID string) error {
+	if err := a.ready(); err != nil {
+		return err
+	}
+	if batchID == "" {
+		return fmt.Errorf("resume batch: batchID is required")
+	}
+	a.queue.ResumeBatch(batchID)
+	return nil
+}
