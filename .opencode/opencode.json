@@ -370,7 +370,7 @@
     },
     "cocoindex-code": {
       "type": "local",
-      "command": ["bash", "-c", "source $HOME/.cargo/env 2>/dev/null; /root/.local/bin/uvx --prerelease=allow cocoindex-code serve"],
+      "command": ["/root/.local/bin/cocoindex-code", "serve"],
       "enabled": true
     }
   },
